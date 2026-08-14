@@ -47,8 +47,17 @@ echo "    /srv/{data,panel-state,stacks,backup,caddy}"
 say "3/6  Salin berkas panel"
 # ---------------------------------------------------------------------------
 APP=/opt/homeserver-panel
-mkdir -p "$APP"
-cp -r "$HERE/panel" "$APP/" 2>/dev/null || true
+REPO="$(cd "$HERE/.." && pwd)"
+# Monaco (inti Code Editor) sengaja tidak ikut di repo (12 MB, kode pihak
+# ketiga) — tanpa ini, Code Editor stuck di "Loading editor..." selamanya
+# dan tidak ada error yang kelihatan di mana pun.
+if [[ ! -d "$REPO/public/vendor/monaco" ]]; then
+    echo "    mengunduh Monaco editor (~13 MB, sekali saja)..."
+    bash "$REPO/scripts/fetch-monaco.sh" || warn "Gagal unduh Monaco — Code Editor tidak akan berfungsi. Coba manual: bash $REPO/scripts/fetch-monaco.sh"
+fi
+mkdir -p "$APP/panel"
+cp "$REPO/Dockerfile" "$REPO/package.json" "$APP/panel/"
+cp -r "$REPO/src" "$REPO/public" "$APP/panel/"
 cp "$HERE/docker-compose.yml" "$APP/docker-compose.yml"
 echo "    terpasang di $APP"
 

@@ -179,7 +179,10 @@ apt-get install -y -qq fail2ban
 # Action khusus: kirim Telegram tiap kali sebuah IP diblokir.
 cat > /etc/fail2ban/action.d/telegram.conf <<'SCRIPT_EOF'
 [Definition]
-actionban = /usr/local/bin/notify "🚫 IP diblokir" "Jail: <name>%0AIP: <code><ip></code>%0APercobaan gagal: <failures>x%0A%0ADiblokir otomatis oleh fail2ban."
+# CATATAN: '%' harus ditulis '%%' di sini — config fail2ban pakai '%' sebagai
+# karakter interpolasi sendiri (ConfigParser-style). '%0A' polos bikin fail2ban
+# gagal start total ("'%' must be followed by '%' or '('").
+actionban = /usr/local/bin/notify "🚫 IP diblokir" "Jail: <name>%%0AIP: <code><ip></code>%%0APercobaan gagal: <failures>x%%0A%%0ADiblokir otomatis oleh fail2ban."
 actionunban =
 SCRIPT_EOF
 

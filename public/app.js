@@ -498,16 +498,32 @@ VIEWS.logs = () => {
 /* ═══════════ 4. Berkas ═══════════ */
 VIEWS.files = () => {
   let cwd = '';
+  let curRoot = 'data';
+  const ROOT_LABELS = { data: 'data', stacks: 'stacks', host: 'laptop (semua file)' };
   const crumb = el('div', { class: 'crumb' });
+  const rootSel = el('select', { style: 'max-width:220px' },
+    el('option', { value: 'data' }, 'Data (/srv/data)'),
+    el('option', { value: 'stacks' }, 'Stacks (/srv/stacks)'),
+    el('option', { value: 'host' }, 'Laptop (semua file)'));
+  const hostWarn = el('div', { class: 'pill warn', style: 'display:none' },
+    '⚠ Ini seluruh filesystem laptop — hati-hati edit/hapus file sistem');
   const wrap = el('div', { class: 'card' });
-  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, crumb), wrap));
+  mount(el('div', {},
+    el('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap' },
+      rootSel, crumb, el('span', { class: 'sp' }), hostWarn),
+    wrap));
+  rootSel.value = curRoot;
+  rootSel.onchange = () => { curRoot = rootSel.value; cwd = '';
+    hostWarn.style.display = curRoot === 'host' ? '' : 'none'; load(); };
+
+  const q = (extra = '') => `root=${encodeURIComponent(curRoot)}${extra}`;
 
   const fileInput = el('input', { type: 'file', multiple: '', style: 'display:none' });
   document.body.append(fileInput);
   fileInput.onchange = async () => {
     for (const f of fileInput.files) {
       try {
-        await fetch(`/api/files/upload?path=${encodeURIComponent(cwd)}&name=${encodeURIComponent(f.name)}`,
+        await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(cwd)}&name=${encodeURIComponent(f.name)}`,
           { method: 'POST', body: f });
         toast(`${f.name} diunggah`);
       } catch { toast('Gagal mengunggah ' + f.name); }
@@ -519,7 +535,8 @@ VIEWS.files = () => {
   addAction('Folder baru', 'plus', async () => {
     const name = prompt('Nama folder baru:');
     if (!name) return;
-    try { await api('/files/mkdir', { method: 'POST', body: JSON.stringify({ path: cwd, name }) });
+    try { await api('/files/mkdir', { method: 'POST',
+      body: JSON.stringify({ path: cwd, name, root: curRoot }) });
       load(); } catch (e) { toast(e.message); }
   });
   addAction('Refresh', 'refresh', () => load());
@@ -527,7 +544,7 @@ VIEWS.files = () => {
   function setCrumb() {
     const parts = cwd ? cwd.split('/').filter(Boolean) : [];
     crumb.replaceChildren();
-    const home = el('a', {}, 'data'); home.onclick = () => { cwd = ''; load(); };
+    const home = el('a', {}, ROOT_LABELS[curRoot] || curRoot); home.onclick = () => { cwd = ''; load(); };
     crumb.append(home);
     parts.forEach((p, i) => {
       crumb.append(el('span', {}, '/'));
@@ -541,17 +558,17 @@ VIEWS.files = () => {
     const full = (cwd ? cwd + '/' : '') + it.name;
     if (it.dir) { cwd = full; return load(); }
     if (/\.(png|jpe?g|gif|webp|svg)$/i.test(it.name)) {
-      return openDrawer(it.name, el('img', { src: `/api/files/raw?path=${encodeURIComponent(full)}`,
+      return openDrawer(it.name, el('img', { src: `/api/files/raw?${q()}&path=${encodeURIComponent(full)}`,
         style: 'max-width:100%;border-radius:8px' }));
     }
     if (it.size > 2 * 1024 * 1024) { toast('File is too large to open'); return; }
     try {
-      const { content } = await api('/files/read?path=' + encodeURIComponent(full));
+      const { content } = await api(`/files/read?${q()}&path=${encodeURIComponent(full)}`);
       const ta = el('textarea', { style: 'height:64vh' }); ta.value = content;
       const save = el('button', { class: 'btn pri', html: ic('edit', 14) + '<span>Simpan</span>' });
       save.onclick = async () => {
         try { await api('/files/write', { method: 'POST',
-          body: JSON.stringify({ path: full, content: ta.value }) });
+          body: JSON.stringify({ path: full, content: ta.value, root: curRoot }) });
           toast('Saved'); } catch (e) { toast(e.message); }
       };
       openDrawer(it.name, el('div', {}, ta,
@@ -559,44 +576,67 @@ VIEWS.files = () => {
     } catch (e) { toast(e.message); }
   }
 
+  // Menu klik-kanan per item — aksi (ganti nama/hapus/unduh) dipindah ke
+  // sini karena grid ikon tidak punya ruang buat tombol di tiap baris.
+  function itemMenu(e, it, full) {
+    document.querySelector('#filemenu')?.remove();
+    const menu = el('div', { id: 'filemenu', class: 'card',
+      style: `position:fixed;left:${e.clientX}px;top:${e.clientY}px;z-index:95;`
+        + 'min-width:170px;padding:4px;box-shadow:0 8px 24px #0004' });
+    const row = (label, fn) => {
+      const d = el('div', { class: 'item', style: 'height:30px;font-size:12.5px' }, label);
+      d.onclick = () => { menu.remove(); fn(); };
+      return d;
+    };
+    menu.append(row('Buka', () => open(it)));
+    if (!it.dir) menu.append(row('Unduh', () =>
+      window.open(`/api/files/download?${q()}&path=${encodeURIComponent(full)}`, '_blank')));
+    menu.append(row('Ganti nama', async () => {
+      const to = prompt('Nama baru:', it.name); if (!to || to === it.name) return;
+      try { await api('/files/rename', { method: 'POST', body: JSON.stringify({
+        from: full, to: (cwd ? cwd + '/' : '') + to, root: curRoot }) }); load(); }
+      catch (err) { toast(err.message); }
+    }));
+    menu.append(row('Hapus', async () => {
+      if (!confirm(`Hapus "${it.name}"?`)) return;
+      try { await api('/files/delete', { method: 'POST',
+        body: JSON.stringify({ path: full, root: curRoot }) });
+        load(); } catch (err) { toast(err.message); }
+    }));
+    document.body.append(menu);
+    setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
+  }
+
   async function load() {
     setCrumb();
     try {
-      const { items } = await api('/files/list?path=' + encodeURIComponent(cwd));
+      const { items } = await api(`/files/list?${q()}&path=${encodeURIComponent(cwd)}`);
       if (!items.length) {
         wrap.replaceChildren(el('div', { class: 'empty', html: ic('folder', 30, 1.3) + '<div>Empty folder</div>' }));
+        $('#sub').textContent = '0 item';
         return;
       }
-      const tb = el('tbody');
+      const grid = el('div', { style: 'display:flex;flex-wrap:wrap;gap:2px;padding:14px;'
+        + 'align-content:flex-start' });
       items.forEach(it => {
         const full = (cwd ? cwd + '/' : '') + it.name;
-        const nameCell = el('div', { class: 'fname',
-          html: ic(it.dir ? 'fold' : 'file', 14) + `<span>${esc(it.name)}</span>` });
-        nameCell.onclick = () => open(it);
-        const dl = el('a', { class: 'ib', title: 'Download', html: ic('down', 14),
-          href: `/api/files/download?path=${encodeURIComponent(full)}` });
-        const rn = el('button', { class: 'ib', title: 'Ganti nama', html: ic('edit', 14) });
-        rn.onclick = async () => {
-          const to = prompt('Nama baru:', it.name); if (!to || to === it.name) return;
-          try { await api('/files/rename', { method: 'POST', body: JSON.stringify({
-            from: full, to: (cwd ? cwd + '/' : '') + to }) }); load(); }
-          catch (e) { toast(e.message); }
-        };
-        const del = el('button', { class: 'ib', title: 'Delete', html: ic('trash', 14) });
-        del.onclick = async () => {
-          if (!confirm(`Hapus "${it.name}"?`)) return;
-          try { await api('/files/delete', { method: 'POST', body: JSON.stringify({ path: full }) });
-            load(); } catch (e) { toast(e.message); }
-        };
-        tb.append(el('tr', {}, el('td', {}, nameCell),
-          el('td', { class: 'num', style: 'color:var(--tx-3)' }, it.dir ? '—' : bytes(it.size)),
-          el('td', { style: 'color:var(--tx-3)' }, it.mtime ? ago(it.mtime) : '—'),
-          el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' },
-            it.dir ? '' : dl, rn, del))));
+        const cell = el('div', { title: it.name, style: 'width:104px;display:flex;flex-direction:column;'
+          + 'align-items:center;padding:10px 6px;border-radius:8px;cursor:pointer;text-align:center' });
+        cell.onmouseenter = () => cell.style.background = 'var(--sunken)';
+        cell.onmouseleave = () => cell.style.background = '';
+        cell.append(
+          el('div', { style: 'height:44px;display:flex;align-items:center;justify-content:center;'
+            + `color:${it.dir ? 'var(--accent,#5b8def)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 40, 1.2) }),
+          el('div', { style: 'font-size:11px;margin-top:6px;line-height:1.3;word-break:break-word;'
+            + 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'
+            + 'max-height:29px;width:100%' }, it.name),
+          el('div', { style: 'font-size:9.5px;color:var(--tx-3);margin-top:2px' },
+            it.dir ? '' : bytes(it.size)));
+        cell.onclick = () => open(it);
+        cell.oncontextmenu = (e) => { e.preventDefault(); itemMenu(e, it, full); };
+        grid.append(cell);
       });
-      wrap.replaceChildren(el('div', { class: 'tbl-wrap' }, el('table', {},
-        el('thead', {}, el('tr', {}, el('th', {}, 'Name'),
-          el('th', { class: 'num' }, 'Size'), el('th', {}, 'Updated'), el('th', {}, ''))), tb)));
+      wrap.replaceChildren(grid);
       $('#sub').textContent = `${items.length} item`;
     } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }

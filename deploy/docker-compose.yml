@@ -23,7 +23,11 @@ services:
       - /srv/caddy:/caddy                # generated Caddyfile
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
-      - /:/host/root:ro
+      # Read-write disengaja: dipakai Files & Code Editor untuk baca/edit
+      # seluruh isi laptop, bukan cuma /srv/data dan /srv/stacks. Panel ini
+      # sudah privileged dan punya terminal host lewat nsenter — mount ini
+      # tidak menambah privilege baru, cuma jalur GUI ke akses yang sudah ada.
+      - /:/host/root
     environment:
       TZ: Asia/Jakarta
       APPS_NETWORK: apps
@@ -31,6 +35,11 @@ services:
       # Set to 1 ONLY when the panel sits behind a reverse proxy you control.
       # Otherwise anyone can forge X-Forwarded-For and defeat login throttling.
       TRUST_PROXY: "0"
+      # Telegram bot for urgent in-app events (terminal opened, sign-ins,
+      # uptime alerts, etc). Separate from the OS-level alerts in
+      # /etc/server-alerts.conf — set these in a sibling .env file.
+      TG_TOKEN: ${TG_TOKEN:-}
+      TG_CHAT: ${TG_CHAT:-}
     pid: host              # needed for the host terminal and power controls
     privileged: true       # needed for nsenter into the host namespace
     networks: [apps]

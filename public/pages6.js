@@ -45,14 +45,36 @@ VIEWS.editor = () => {
   const tabBar = el('div', { style: 'height:33px;flex:0 0 33px;display:flex;overflow-x:auto;'
     + 'background:var(--surface);border-bottom:1px solid var(--line)' });
   const host = el('div', { style: 'flex:1;min-height:0' });
-  const termPane = el('div', { style: 'display:none;height:230px;flex:0 0 230px;'
-    + 'border-top:1px solid var(--line);background:#0b0c0f;padding:5px' });
+  let termHeight = +localStorage.getItem('ed.termHeight') || 230;
+  const termPane = el('div', { style: `display:none;height:${termHeight}px;flex:0 0 ${termHeight}px;`
+    + 'background:#0b0c0f;padding:5px' });
+  const termResize = el('div', { style: 'display:none;height:5px;flex:0 0 5px;cursor:ns-resize;'
+    + 'background:var(--line)' });
+  termResize.onmouseenter = () => termResize.style.background = 'var(--accent, #5b8def)';
+  termResize.onmouseleave = () => termResize.style.background = 'var(--line)';
+  termResize.onmousedown = (e) => {
+    e.preventDefault();
+    const startY = e.clientY, startH = termHeight;
+    const onMove = (ev) => {
+      termHeight = Math.max(100, Math.min(window.innerHeight * 0.75, startH + (startY - ev.clientY)));
+      termPane.style.height = termHeight + 'px';
+      termPane.style.flexBasis = termHeight + 'px';
+      try { fitAddon?.fit(); editor?.layout(); } catch {}
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      localStorage.setItem('ed.termHeight', String(Math.round(termHeight)));
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
   const status = el('div', { style: 'height:23px;flex:0 0 23px;background:var(--surface);'
     + 'border-top:1px solid var(--line);display:flex;align-items:center;gap:12px;'
     + 'padding:0 10px;font-size:10.5px;color:var(--tx-3)' });
 
   const main = el('div', { style: 'flex:1;display:flex;flex-direction:column;min-width:0;min-height:0' },
-    tabBar, host, termPane, status);
+    tabBar, host, termResize, termPane, status);
 
   const wrap = el('div', { style: 'display:flex;height:100%;min-height:0' }, side, main);
   mount(wrap, { full: true });
@@ -113,7 +135,7 @@ VIEWS.editor = () => {
           el('div', { style: 'flex:1;min-width:0' },
             el('div', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, w.name),
             el('div', { style: 'font-size:10.5px;color:var(--tx-3)' },
-              `${w.root === 'stacks' ? 'Apps' : 'Data'} · ${w.files} items`)),
+              `${w.root === 'stacks' ? 'Apps' : w.root === 'host' ? 'Laptop' : 'Data'} · ${w.files} items`)),
           w.hint ? el('span', { class: 'pill', style: 'font-size:10px' }, w.hint) : '');
         d.onclick = () => { close(); setWorkspace({ root: w.root, path: w.path, name: w.name }); };
         return d;
@@ -122,18 +144,83 @@ VIEWS.editor = () => {
       const rootRows = [
         { root: 'stacks', path: '', name: 'All apps  (/srv/stacks)' },
         { root: 'data', path: '', name: 'All data  (/srv/data)' },
+        { root: 'host', path: '', name: 'Semua file laptop  (/)' },
       ].map(w => {
         const d = el('div', { class: 'item', style: 'height:32px;font-size:12px;color:var(--tx-3)' });
         d.append(el('span', { html: ic('layers', 13) }), el('span', {}, w.name));
         d.onclick = () => { close(); setWorkspace(w); };
         return d;
       });
+      const browseRow = el('div', { class: 'item', style: 'height:32px;font-size:12px;color:var(--tx-2)' });
+      browseRow.append(el('span', { html: ic('folder', 13) }),
+        el('span', {}, 'Jelajahi & pilih folder tertentu di laptop…'));
+      browseRow.onclick = () => { close(); browseHostFolder(); };
       list.replaceChildren(
         el('div', { class: 'grp' }, 'Projects'), ...rows,
-        el('div', { class: 'grp' }, 'Whole folder'), ...rootRows);
+        el('div', { class: 'grp' }, 'Whole folder'), ...rootRows, browseRow);
     } catch (e) {
       list.replaceChildren(el('div', { class: 'empty', style: 'padding:26px' }, e.message));
     }
+  }
+
+  /* ── Jelajahi filesystem laptop, pilih satu folder spesifik ── */
+  async function browseHostFolder() {
+    let cur = '';
+    const crumb = el('div', { class: 'crumb', style: 'font-size:12px' });
+    const list = el('div', { style: 'max-height:44vh;overflow:auto;padding:5px' });
+    const btnUse = el('button', { class: 'btn pri' }, 'Buka folder ini →');
+    const box = el('div', { class: 'card', style: 'width:min(560px,92vw);overflow:hidden' },
+      el('div', { style: 'padding:12px 14px;border-bottom:1px solid var(--line)' },
+        el('div', { style: 'font-size:13px;font-weight:600' }, 'Jelajahi laptop'),
+        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin:3px 0 8px' },
+          'Klik folder untuk masuk, lalu klik "Buka folder ini" di folder yang mau dijadikan project.'),
+        el('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, crumb, el('span', { class: 'sp' }), btnUse)),
+      list);
+    const ov = el('div', { style: 'position:fixed;inset:0;z-index:95;background:#0008;'
+      + 'display:flex;align-items:flex-start;justify-content:center;padding-top:10vh' }, box);
+    const close = () => ov.remove();
+    ov.onclick = (e) => e.target === ov && close();
+    document.body.append(ov);
+
+    function setCrumb() {
+      const parts = cur ? cur.split('/').filter(Boolean) : [];
+      crumb.replaceChildren();
+      const home = el('a', {}, '/'); home.onclick = () => { cur = ''; load(); };
+      crumb.append(home);
+      parts.forEach((p, i) => {
+        crumb.append(el('span', {}, '/'));
+        const a = el('a', {}, p);
+        a.onclick = () => { cur = parts.slice(0, i + 1).join('/'); load(); };
+        crumb.append(a);
+      });
+    }
+    btnUse.onclick = () => {
+      close();
+      const name = cur ? cur.split('/').filter(Boolean).pop() : 'laptop';
+      setWorkspace({ root: 'host', path: cur, name: `${name}  (/${cur})` });
+    };
+
+    async function load() {
+      setCrumb();
+      list.replaceChildren(el('div', { class: 'empty', style: 'padding:20px' }, 'Loading…'));
+      try {
+        const { items } = await api(`/files/list?root=host&path=${encodeURIComponent(cur)}`);
+        const dirs = items.filter(it => it.dir);
+        if (!dirs.length) {
+          list.replaceChildren(el('div', { class: 'empty', style: 'padding:20px;font-size:12px' }, 'Tidak ada subfolder di sini.'));
+          return;
+        }
+        list.replaceChildren(...dirs.map(it => {
+          const d = el('div', { class: 'item', style: 'height:32px;font-size:12.5px' });
+          d.append(el('span', { html: ic('folder', 14) }), el('span', {}, it.name));
+          d.onclick = () => { cur = (cur ? cur + '/' : '') + it.name; load(); };
+          return d;
+        }));
+      } catch (e) {
+        list.replaceChildren(el('div', { class: 'empty', style: 'padding:20px' }, e.message));
+      }
+    }
+    load();
   }
 
   function setWorkspace(w) {
@@ -509,6 +596,7 @@ VIEWS.editor = () => {
   function toggleTerm() {
     termOpen = !termOpen;
     termPane.style.display = termOpen ? 'block' : 'none';
+    termResize.style.display = termOpen ? 'block' : 'none';
     bTerm.classList.toggle('pri', termOpen);
     if (termOpen && !term) startTerm();
     setTimeout(() => { editor?.layout(); try { fitAddon?.fit(); } catch {} }, 60);
@@ -524,7 +612,11 @@ VIEWS.editor = () => {
     term.open(termPane);
     setTimeout(() => { try { fitAddon.fit(); } catch {} }, 60);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    sock = new WebSocket(`${proto}://${location.host}/ws/term`);
+    // Samain posisi terminal sama folder project yang lagi dibuka — kayak
+    // VS Code, buka folder "backend" -> terminal langsung di situ.
+    const HOST_PREFIX = { data: '/srv/data', stacks: '/srv/stacks', host: '' };
+    const cwdParam = ws ? `?cwd=${encodeURIComponent((HOST_PREFIX[ws.root] ?? '') + '/' + (ws.path || ''))}` : '';
+    sock = new WebSocket(`${proto}://${location.host}/ws/term${cwdParam}`);
     sock.binaryType = 'arraybuffer';
     sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
     sock.onclose = () => term.write('\r\n\x1b[90m— session ended —\x1b[0m\r\n');

@@ -185,10 +185,35 @@ VIEWS.terminal = () => {
   const host = el('div', { style: 'flex:1;min-height:0;background:#0b0c0f;padding:6px' });
   const sel = el('select', { style: 'max-width:260px' },
     el('option', { value: '' }, 'Shell host (mesin server)'));
+
+  // Form copy/paste manual — Clipboard API browser butuh HTTPS + izin dan
+  // sering gagal diam-diam (terutama akses LAN via http://). Textarea biasa
+  // selalu bisa di-paste/copy pakai klik-kanan atau Ctrl+C/V bawaan OS,
+  // tidak tergantung izin apa pun.
+  const pasteBox = el('textarea', { rows: '2', placeholder: 'Tempel teks di sini (klik kanan atau Ctrl+V), lalu klik Kirim →',
+    style: 'flex:1;resize:vertical;font-family:var(--mono);font-size:11.5px;padding:6px 8px;min-width:160px' });
+  const btnSend = el('button', { class: 'btn pri' }, 'Kirim →');
+  const copyBox = el('textarea', { rows: '2', readonly: '', placeholder: '(pilih teks di terminal, hasilnya muncul di sini)',
+    style: 'flex:1;resize:vertical;font-family:var(--mono);font-size:11.5px;padding:6px 8px;min-width:160px' });
+  const btnCopy = el('button', { class: 'btn' }, 'Salin');
+  btnSend.onclick = () => {
+    if (pasteBox.value && ws?.readyState === 1) { ws.send(pasteBox.value); pasteBox.value = ''; }
+  };
+  btnCopy.onclick = () => {
+    copyBox.focus(); copyBox.select();
+    try { document.execCommand('copy'); toast('Tersalin'); } catch {}
+  };
+
   mount(el('div', { style: 'display:flex;flex-direction:column;height:100%' },
     el('div', { class: 'row', style: 'padding:10px 14px;border-bottom:1px solid var(--line);'
       + 'background:var(--surface)' },
-      el('div', { style: 'max-width:280px;flex:1' }, sel)), host), { full: true });
+      el('div', { style: 'max-width:280px;flex:1' }, sel)),
+    el('div', { class: 'row', style: 'padding:8px 14px;border-bottom:1px solid var(--line);'
+      + 'background:var(--surface);gap:8px;flex-wrap:wrap' },
+      pasteBox, btnSend,
+      el('div', { style: 'width:1px;align-self:stretch;background:var(--line)' }),
+      copyBox, btnCopy),
+    host), { full: true });
 
   let term, fit, ws;
   function connect() {
@@ -198,7 +223,7 @@ VIEWS.terminal = () => {
       cursorBlink: true, scrollback: 4000,
       theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
     fit = new FitAddon.FitAddon();
-    term.loadAddon(fit); term.open(host); fit.fit();
+    term.loadAddon(fit); term.open(host); fit.fit(); term.focus();
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const c = sel.value ? `?container=${encodeURIComponent(sel.value)}` : '';
     ws = new WebSocket(`${proto}://${location.host}/ws/term${c}`);
@@ -207,6 +232,18 @@ VIEWS.terminal = () => {
     ws.onclose = () => term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
     term.onData(d => ws.readyState === 1 && ws.send(d));
     term.onResize(({ rows, cols }) => ws.readyState === 1 && ws.send(`\x00resize:${rows},${cols}`));
+    // Isi kotak "Salin" tiap kali seleksi berubah — andalan utama untuk copy,
+    // tidak butuh izin Clipboard API (yang sering gagal diam-diam di http://).
+    // Clipboard API tetap dicoba sebagai bonus kalau browser mengizinkan.
+    term.onSelectionChange(() => {
+      const t = term.getSelection();
+      copyBox.value = t || '';
+      if (t) navigator.clipboard?.writeText(t).catch(() => {});
+    });
+    // TIDAK mencegat Ctrl+V — biarkan xterm.js pakai event 'paste' native
+    // browser (klik kanan / Ctrl+V ke textarea tersembunyinya). Itu tidak
+    // butuh izin Clipboard API sama sekali dan lebih bisa diandalkan.
+    host.onclick = () => term.focus();
     const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} });
     ro.observe(host);
     timers.push({ close: () => { ro.disconnect(); ws?.close(); } });
@@ -504,15 +541,21 @@ VIEWS.settings = () => {
             toast('2FA enabled'); closeDrawer(); load();
           } catch (e) { toast(e.message); }
         };
+        const qrCanvas = el('canvas', { style: 'display:block;margin:0 auto;max-width:100%;height:auto' });
         openDrawer('Enable 2FA', el('div', {},
           el('div', { style: 'font-size:12.5px;color:var(--tx-2);margin-bottom:10px' },
-            'Buka aplikasi autentikator (Google Authenticator, Aegis, 1Password), '
-            + 'pilih tambah manual, lalu masukkan kunci ini:'),
-          el('div', { class: 'card' }, el('div', { class: 'card-b mono',
-            style: 'font-size:14px;letter-spacing:.12em;word-break:break-all' }, secret)),
-          el('div', { style: 'font-size:11px;color:var(--tx-3);margin:10px 0' }, uri),
+            'Buka aplikasi autentikator (Google Authenticator, Aegis, 1Password) dan scan kode ini:'),
+          el('div', { class: 'card' }, el('div', { class: 'card-b' }, qrCanvas)),
+          el('details', { style: 'margin:10px 0' },
+            el('summary', { style: 'font-size:11.5px;color:var(--tx-3);cursor:pointer' },
+              'Tidak bisa scan? Masukkan kunci manual'),
+            el('div', { class: 'mono', style: 'font-size:14px;letter-spacing:.12em;word-break:break-all;margin-top:8px' },
+              secret)),
           el('div', { class: 'field' }, el('label', {}, 'Code from your app'), code),
           el('div', { class: 'row' }, ok2)));
+        try { QR.draw(qrCanvas, uri, { scale: 6 }); }
+        catch (e) { qrCanvas.replaceWith(el('div', { style: 'color:var(--tx-3);font-size:11.5px' },
+          'QR gagal dibuat (' + e.message + '), pakai kunci manual di bawah.')); }
       };
       bodyFA.append(el('div', { class: 'row' },
         el('span', { class: 'pill' }, 'Inactive'),

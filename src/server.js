@@ -12,8 +12,15 @@ import * as ev from './events.js';
 import * as ai from './ai.js';
 import * as proxy from './proxy.js';
 import * as dbaas from './dbaas.js';
-import { accept as wsAccept } from './ws.js';
+import { WebSocketServer } from 'ws';
 import * as sys from './system.js';
+
+// Dipakai khusus untuk terminal web (/ws/term). Implementasi WS tulisan sendiri
+// (ws.js) di-drop untuk endpoint ini karena ada bug framing yang tidak
+// terlacak — beberapa client (Firefox, python `websockets`) menolak
+// handshake-nya walau byte-nya sudah diverifikasi identik dengan implementasi
+// yang benar. Endpoint lain di panel ini tidak pakai WebSocket sama sekali.
+const wss = new WebSocketServer({ noServer: true });
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(__dir, '..', 'public');
@@ -235,6 +242,10 @@ setTimeout(runChecks, 4000);
 const ROOTS = {
   data: DATA_ROOT,
   stacks: process.env.STACKS_DIR || '/stacks',
+  // Seluruh filesystem laptop, lewat bind mount di docker-compose.yml.
+  // Bukan privilege baru — Terminal (host) sudah kasih akses penuh yang sama,
+  // ini cuma jalur GUI ke akses yang sudah ada.
+  host: '/host/root',
 };
 function safePath(rel, root = 'data') {
   const base = ROOTS[root] || DATA_ROOT;
@@ -243,6 +254,17 @@ function safePath(rel, root = 'data') {
     throw new Error('Path outside the allowed folder');
   }
   return p;
+}
+
+// Panel jalan sebagai root (butuh buat Docker socket, nsenter, dll), jadi
+// file/folder baru lewat Files/Code Editor selalu jadi milik root secara
+// default — bikin repot diedit lagi lewat desktop biasa tanpa sudo. Samakan
+// kepemilikannya dengan folder induk, kayak kalau user biasa yang bikin.
+async function chownLikeParent(target) {
+  try {
+    const pst = await fs.stat(path.dirname(target));
+    await fs.chown(target, pst.uid, pst.gid);
+  } catch {}
 }
 
 // Berkas yang tidak pernah ditampilkan di editor: berat, biner, atau
@@ -1411,7 +1433,11 @@ const server = http.createServer(async (req, res) => {
       // Daftar folder project yang bisa dibuka, bukan seluruh isi disk.
       if (p === '/api/files/workspaces') {
         const out = [];
+        // 'host' sengaja dilewati di sini — top-level-nya cuma folder sistem
+        // (bin, etc, usr, ...), bukan "project". Tetap bisa dibuka manual
+        // lewat pilihan root langsung di Files / Code Editor.
         for (const [rootId, base] of Object.entries(ROOTS)) {
+          if (rootId === 'host') continue;
           let ents = [];
           try { ents = await fs.readdir(base, { withFileTypes: true }); } catch { continue; }
           for (const e of ents) {
@@ -1515,6 +1541,7 @@ const server = http.createServer(async (req, res) => {
         await fs.mkdir(path.dirname(f), { recursive: true });
         try { await fs.access(f); return fail(res, 'File already exists', 409); } catch {}
         await fs.writeFile(f, b.content ?? '');
+        await chownLikeParent(f);
         return ok(res);
       }
 
@@ -1539,7 +1566,10 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/files/write' && req.method === 'POST') {
         const b = await readJson(req);
-        await fs.writeFile(safePath(b.path, b.root), b.content ?? '', 'utf8');
+        const f = safePath(b.path, b.root);
+        const isNew = await fs.access(f).then(() => false).catch(() => true);
+        await fs.writeFile(f, b.content ?? '', 'utf8');
+        if (isNew) await chownLikeParent(f);
         return ok(res);
       }
       if (p === '/api/files/download') {
@@ -1559,11 +1589,14 @@ const server = http.createServer(async (req, res) => {
         const dest = safePath(path.posix.join(q.get('path') || '', q.get('name') || 'file'), q.get('root'));
         await fs.mkdir(path.dirname(dest), { recursive: true });
         await fs.writeFile(dest, await readBody(req));
+        await chownLikeParent(dest);
         return ok(res);
       }
       if (p === '/api/files/mkdir' && req.method === 'POST') {
         const b = await readJson(req);
-        await fs.mkdir(safePath(path.posix.join(b.path || '', b.name), b.root), { recursive: true });
+        const dir = safePath(path.posix.join(b.path || '', b.name), b.root);
+        await fs.mkdir(dir, { recursive: true });
+        await chownLikeParent(dir);
         return ok(res);
       }
       if (p === '/api/files/rename' && req.method === 'POST') {
@@ -1690,9 +1723,7 @@ server.on('upgrade', async (req, socket, head) => {
   const ses = mm ? auth.getSession(decodeURIComponent(mm[1])) : null;
   if (!ses) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
 
-  const ws = wsAccept(req, socket, head);
-  if (!ws) return;
-
+  wss.handleUpgrade(req, socket, head, (ws) => {
   const target = u.searchParams.get('container');
   auth.audit(ses.username, 'terminal', target || 'host');
   ev.emit('sec.terminal_opened',
@@ -1702,47 +1733,64 @@ server.on('upgrade', async (req, socket, head) => {
     if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(target)) {
       ws.send('\r\n\x1b[31mInvalid container id\x1b[0m\r\n'); ws.close(); return;
     }
-    try {
-      // Hanya dua shell yang diizinkan; nilai ini menjadi argv perintah exec.
-      const want = u.searchParams.get('shell') || 'sh';
-      const shell = ['sh', 'bash'].includes(want) ? want : 'sh';
-      const ex = await dockerExtra.execCreate(target, [shell]);
-      const sock = await dockerExtra.execStart(ex.Id);
-      sock.on('data', (d) => ws.sendBin(d));
-      sock.on('close', () => ws.close());
-      ws.onMessage = (b) => {
-        const t = b.toString();
-        if (t.startsWith('\x00resize:')) {
-          const [h, w] = t.slice(8).split(',').map(Number);
-          dockerExtra.execResize(ex.Id, h, w).catch(() => {});
-          return;
-        }
-        try { sock.write(b); } catch {}
-      };
-      ws.onClose = () => { try { sock.destroy(); } catch {} };
-      ws.send(`\r\n\x1b[90m— terhubung ke ${target} —\x1b[0m\r\n`);
-    } catch (e) {
-      ws.send(`\r\n\x1b[31mGagal membuka terminal: ${e.message}\x1b[0m\r\n`);
-      ws.close();
-    }
+    (async () => {
+      try {
+        // Hanya dua shell yang diizinkan; nilai ini menjadi argv perintah exec.
+        const want = u.searchParams.get('shell') || 'sh';
+        const shell = ['sh', 'bash'].includes(want) ? want : 'sh';
+        const ex = await dockerExtra.execCreate(target, [shell]);
+        const sock = await dockerExtra.execStart(ex.Id);
+        sock.on('data', (d) => ws.send(d));
+        sock.on('close', () => ws.close());
+        ws.on('message', (b) => {
+          const t = b.toString();
+          if (t.startsWith('\x00resize:')) {
+            const [h, w] = t.slice(8).split(',').map(Number);
+            dockerExtra.execResize(ex.Id, h, w).catch(() => {});
+            return;
+          }
+          try { sock.write(b); } catch {}
+        });
+        ws.on('close', () => { try { sock.destroy(); } catch {} });
+        ws.send(`\r\n\x1b[90m— terhubung ke ${target} —\x1b[0m\r\n`);
+      } catch (e) {
+        ws.send(`\r\n\x1b[31mGagal membuka terminal: ${e.message}\x1b[0m\r\n`);
+        ws.close();
+      }
+    })();
     return;
   }
 
   // Shell host: masuk ke namespace PID 1 supaya benar-benar di mesin, bukan container.
-  const { spawn } = await import('node:child_process');
-  const sh = spawn('nsenter', ['-t', '1', '-m', '-u', '-n', '-i', '--', 'sh', '-l'],
-    { stdio: ['pipe', 'pipe', 'pipe'] });
-  sh.stdout.on('data', (d) => ws.sendBin(d));
-  sh.stderr.on('data', (d) => ws.sendBin(d));
-  sh.on('close', () => ws.close());
-  sh.on('error', (e) => { ws.send(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); ws.close(); });
-  ws.onMessage = (b) => {
-    const t = b.toString();
-    if (t.startsWith('\x00resize:')) return;
-    try { sh.stdin.write(b); } catch {}
-  };
-  ws.onClose = () => { try { sh.kill(); } catch {} };
-  ws.send('\r\n\x1b[90m— shell host —\x1b[0m\r\n');
+  // Dibungkus 'script' supaya shell dapat PTY sungguhan — tanpa ini shell jalan
+  // non-interaktif (tidak ada echo, tidak ada prompt), yang kelihatan dari luar
+  // seperti "tidak bisa diketik" padahal perintah sebenarnya diterima.
+  import('node:child_process').then(({ spawn }) => {
+    // Kalau dibuka dari Code Editor dengan folder project aktif, masuk
+    // langsung ke folder itu — kayak terminal terpadu VS Code. Path lewat
+    // env var (PANEL_CWD), bukan ditempel langsung ke command, supaya tidak
+    // ada celah shell-injection dari nama folder yang aneh-aneh.
+    const cwdReq = u.searchParams.get('cwd') || '';
+    const sh = spawn('script', ['-qc',
+      'nsenter -t 1 -m -u -n -i -- sh -c \'[ -n "$PANEL_CWD" ] && cd "$PANEL_CWD" 2>/dev/null; exec sh -l\'',
+      '/dev/null'],
+      { stdio: ['pipe', 'pipe', 'pipe'],
+        // TERM wajib diset — tanpa ini perintah yang baca terminfo (clear,
+        // less, vim, dst) gagal dengan "TERM environment variable not set".
+        env: { ...process.env, TERM: 'xterm-256color', PANEL_CWD: cwdReq } });
+    sh.stdout.on('data', (d) => ws.send(d));
+    sh.stderr.on('data', (d) => ws.send(d));
+    sh.on('close', () => ws.close());
+    sh.on('error', (e) => { ws.send(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); ws.close(); });
+    ws.on('message', (b) => {
+      const t = b.toString();
+      if (t.startsWith('\x00resize:')) return;
+      try { sh.stdin.write(b); } catch {}
+    });
+    ws.on('close', () => { try { sh.kill(); } catch {} });
+    ws.send('\r\n\x1b[90m— shell host —\x1b[0m\r\n');
+  });
+  });
 });
 
 dbaas.ensureNetwork().catch(() => {});

@@ -16,3 +16,10 @@ backup/
 # Sistem
 .DS_Store
 *.log
+
+# Kredensial lokal untuk docker compose (token bot Telegram, dll)
+.env
+
+# Dibuat otomatis oleh install-panel.sh dari source di root repo — bukan
+# sumber kebenaran, jangan di-commit.
+deploy/panel/

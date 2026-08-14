@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Home Server</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg">
+<meta name="theme-color" content="#0c0d10">
+<link rel="stylesheet" href="/vendor/xterm.css">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<aside id="side">
+  <div class="brand">
+    <div class="mark">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="20" height="7" rx="1.6"/><rect x="2" y="14" width="20" height="7" rx="1.6"/>
+        <line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/></svg>
+    </div>
+    <div style="min-width:0">
+      <b>Home Server</b><span id="hostLabel">memuat…</span>
+    </div>
+  </div>
+  <nav id="nav"></nav>
+  <div class="side-foot">
+    <button class="ib" id="themeBtn" title="Ganti tema"></button>
+    <span class="sp"></span>
+    <span style="font-size:10.5px;color:var(--tx-3)" id="verLabel"></span>
+  </div>
+</aside>
+
+<main>
+  <header>
+    <button class="ib" id="burger" title="Menu">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/>
+        <line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+    </button>
+    <span id="title">Ringkasan</span><span id="sub"></span>
+    <span class="sp"></span>
+    <div id="actions" class="row"></div>
+  </header>
+  <div class="view" id="view"></div>
+</main>
+
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-h">
+    <span id="drawerTitle" style="font-size:13px;font-weight:600"></span>
+    <span class="sp"></span>
+    <button class="ib" onclick="closeDrawer()">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/>
+        <line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div class="drawer-b" id="drawerBody"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/xterm-fit.js"></script>
+<script src="/app.js"></script>
+<script src="/pages.js"></script>
+<script src="/pages2.js"></script>
+<script src="/pages3.js"></script>
+<script src="/pages4.js"></script>
+<script src="/pages5.js"></script>
+<script src="/pages6.js"></script>
+</body>
+</html>

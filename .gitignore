@@ -1,0 +1,18 @@
+# Dependensi
+node_modules/
+
+# Monaco: 12 MB kode pihak ketiga. Diambil lewat scripts/fetch-monaco.sh
+public/vendor/monaco/
+
+# Keadaan runtime — TIDAK BOLEH masuk repo:
+# berisi kata sandi pengguna, kunci brankas, dan kredensial basis data.
+state/
+data/
+stacks/
+backup/
+*.sqlite3
+*.db
+
+# Sistem
+.DS_Store
+*.log

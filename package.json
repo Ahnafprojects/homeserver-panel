@@ -1,0 +1,12 @@
+{
+  "name": "homeserver-panel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": { "start": "node src/server.js" },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "mysql2": "^3.11.5"
+  }
+}

@@ -1,0 +1,60 @@
+# Home Server Panel — production stack for the Asus K42F
+#
+#   docker compose up -d --build
+#
+# The panel manages Docker on this machine, so it needs the Docker socket.
+# It also reads host /proc and /sys to report real CPU, memory and temperature
+# rather than the container's own numbers.
+
+services:
+  panel:
+    build: ./panel
+    image: homeserver-panel:latest
+    container_name: panel
+    restart: unless-stopped
+    ports:
+      - "8090:8080"          # remove this once Caddy fronts the panel
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/data:/data                  # your files
+      - /srv/panel-state:/state          # users, events, settings
+      - /srv/stacks:/stacks              # deployed apps
+      - /srv/backup:/backup              # backups
+      - /srv/caddy:/caddy                # generated Caddyfile
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro
+    environment:
+      TZ: Asia/Jakarta
+      APPS_NETWORK: apps
+      CADDY_CONTAINER: caddy
+      # Set to 1 ONLY when the panel sits behind a reverse proxy you control.
+      # Otherwise anyone can forge X-Forwarded-For and defeat login throttling.
+      TRUST_PROXY: "0"
+    pid: host              # needed for the host terminal and power controls
+    privileged: true       # needed for nsenter into the host namespace
+    networks: [apps]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /srv/caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+      - caddy_logs:/var/log/caddy
+    networks: [apps]
+
+volumes:
+  caddy_data:
+  caddy_config:
+  caddy_logs:
+
+networks:
+  apps:
+    name: apps
+    driver: bridge

@@ -85,6 +85,17 @@ account.
 A `docker-compose.yml` for the full stack (panel plus Caddy) lives in the
 deployment bundle alongside `install-panel.sh`.
 
+## Deploying to a server
+
+The `deploy/` folder holds the full bundle: setup scripts, the compose file,
+and `SETUP-PROMPT.md` — a briefing written for an AI agent doing the install,
+covering the hardware, the constraints, and which decisions were deliberate.
+
+```bash
+git clone https://github.com/Ahnafprojects/homeserver-panel ~/panel
+cd ~/panel && sudo bash deploy/scripts/PASANG-SEMUA.sh
+```
+
 ## Layout
 
 ```
@@ -104,6 +115,10 @@ public/
   app.js       shell, navigation, charts, shared helpers
   pages*.js    one file per feature area
   app.css      design tokens and components
+deploy/
+  SETUP-PROMPT.md   briefing for an agent performing the install
+  install-panel.sh  builds and starts the stack
+  scripts/          server hardening, Docker, alerts, backups
 ```
 
 ## Notes and limits

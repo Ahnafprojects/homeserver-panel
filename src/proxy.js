@@ -102,9 +102,12 @@ export async function certInfo() {
       continue;
     }
     try {
+      // Dijalankan tanpa shell; nama domain sudah tervalidasi saat ditambahkan,
+      // tetapi tetap tidak diinterpolasi ke perintah shell.
+      if (!validDomain(s.domain)) { out.push({ domain: s.domain, kind: 'unknown', daysLeft: null }); continue; }
       const r = await runP('sh', ['-c',
-        `echo | openssl s_client -servername ${s.domain} -connect ${s.domain}:443 2>/dev/null ` +
-        `| openssl x509 -noout -enddate 2>/dev/null`]);
+        'echo | openssl s_client -servername "$1" -connect "$1:443" 2>/dev/null '
+        + '| openssl x509 -noout -enddate 2>/dev/null', 'sh', s.domain]);
       const m = r.out.match(/notAfter=(.+)/);
       if (m) {
         const exp = new Date(m[1]);
@@ -116,13 +119,19 @@ export async function certInfo() {
   return out;
 }
 
-/* Cek apakah DNS domain sudah mengarah ke server ini. */
+/* Cek apakah DNS domain sudah mengarah ke server ini.
+   Nama domain TIDAK boleh masuk ke shell: sebelumnya nilai ini dipakai
+   langsung di `sh -c`, sehingga `x; perintah` ikut dieksekusi. Sekarang
+   divalidasi dulu lalu dijalankan sebagai argumen, tanpa shell. */
 export async function dnsCheck(domain) {
+  domain = String(domain || '').trim().toLowerCase();
+  if (!validDomain(domain)) throw new Error('Invalid domain');
   const [res, mine] = await Promise.all([
-    runP('sh', ['-c', `getent hosts ${domain} | awk '{print $1}' | head -3`]),
-    runP('sh', ['-c', `curl -s --max-time 6 https://api.ipify.org || true`]),
+    runP('getent', ['hosts', domain]),
+    runP('curl', ['-s', '--max-time', '6', 'https://api.ipify.org']),
   ]);
-  const resolved = res.out.split('\n').filter(Boolean);
+  const resolved = res.out.split('\n').map(l => l.trim().split(/\s+/)[0])
+    .filter(Boolean).slice(0, 3);
   const publicIp = mine.out.trim();
   return { resolved, publicIp,
     match: publicIp ? resolved.includes(publicIp) : null };

@@ -338,9 +338,19 @@ const cookieOf = (req, name) => {
   const m = c.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]+)'));
   return m ? decodeURIComponent(m[1]) : null;
 };
-const ipOf = (req) =>
-  (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-  req.socket.remoteAddress || '?';
+/* Alamat asli koneksi. X-Forwarded-For hanya dipercaya bila panel memang
+   berada di belakang proxy dan TRUST_PROXY diaktifkan — kalau tidak, siapa
+   pun bisa mengganti header itu tiap permintaan dan pembatasan percobaan
+   masuk menjadi tidak berguna. Hasilnya juga dibersihkan agar tidak bisa
+   menyisipkan markup ke catatan kejadian. */
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const cleanIp = (s2) => String(s2 || '').replace(/[^0-9a-fA-F:.\[\]]/g, '').slice(0, 45);
+const ipOf = (req) => {
+  const direct = cleanIp(req.socket.remoteAddress) || '?';
+  if (!TRUST_PROXY) return direct;
+  const fwd = cleanIp((req.headers['x-forwarded-for'] || '').split(',')[0]);
+  return fwd || direct;
+};
 
 // Rute yang boleh diakses tanpa sesi.
 const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup']);
@@ -1005,10 +1015,14 @@ const server = http.createServer(async (req, res) => {
         let r;
         if (b.name.startsWith('db-')) {
           if (!b.container) return fail(res, 'Database container is required', 400);
+          dbaas.assertName(b.container, 'container');
+          dbaas.assertName(b.user || 'postgres', 'database user');
           r = await stacks.runP('sh', ['-c',
-            `gunzip -c '${f}' | docker exec -i ${b.container} psql -U ${b.user || 'postgres'}`]);
+            'gunzip -c "$1" | docker exec -i "$2" psql -U "$3"',
+            'sh', f, b.container, b.user || 'postgres']);
         } else if (b.name.startsWith('volume-')) {
           if (!b.volume) return fail(res, 'Volume name is required', 400);
+          dbaas.assertName(b.volume, 'volume');
           r = await stacks.runP('docker', ['run', '--rm', '-v', `${b.volume}:/dst`,
             '-v', `${path.dirname(f)}:/src:ro`, 'alpine',
             'sh', '-c', `tar xzf /src/${path.basename(f)} -C /dst`]);
@@ -1365,6 +1379,11 @@ const server = http.createServer(async (req, res) => {
 
       if ((m = p.match(/^\/api\/containers\/([^/]+)\/(start|stop|restart|remove)$/))) {
         if (req.method !== 'POST') return fail(res, 'POST required', 405);
+        // Nilai ini masuk ke path Docker API; batasi ke bentuk id/nama yang sah
+        // supaya tidak bisa dipakai menjangkau endpoint lain.
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(m[1])) {
+          return fail(res, 'Invalid container id', 400);
+        }
         await docker[m[2] === 'remove' ? 'remove' : m[2]](m[1]);
         return ok(res);
       }
@@ -1607,6 +1626,8 @@ const server = http.createServer(async (req, res) => {
     // ---------- Webhook auto-deploy ----------
     // Tidak butuh sesi: keamanannya dari token acak di dalam URL.
     if (p.startsWith('/hook/')) {
+      // Hanya POST: dengan GET, sebuah <img> di situs lain bisa memicu deploy.
+      if (req.method !== 'POST') return fail(res, 'POST required', 405);
       const token = p.slice(6);
       const name = stacks.stackByHook(token);
       if (!name) return fail(res, 'Unknown token', 404);
@@ -1651,6 +1672,19 @@ server.on('upgrade', async (req, socket, head) => {
   const u = new URL(req.url, 'http://x');
   if (!u.pathname.startsWith('/ws/term')) { socket.destroy(); return; }
 
+  // Tolak upgrade dari halaman lain: tanpa ini sebuah situs berbahaya bisa
+  // membuka WebSocket ke panel memakai cookie sesi yang sudah ada dan
+  // mendapatkan terminal host.
+  const origin = req.headers.origin;
+  if (origin) {
+    let okOrigin = false;
+    try {
+      const o = new URL(origin);
+      okOrigin = o.host === req.headers.host;
+    } catch {}
+    if (!okOrigin) { socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return; }
+  }
+
   const cookie = req.headers.cookie || '';
   const mm = cookie.match(/(?:^|;\s*)sid=([^;]+)/);
   const ses = mm ? auth.getSession(decodeURIComponent(mm[1])) : null;
@@ -1665,8 +1699,13 @@ server.on('upgrade', async (req, socket, head) => {
     `<b>${ses.username}</b> membuka terminal ${target ? 'container ' + target : 'host'}.`);
 
   if (target) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(target)) {
+      ws.send('\r\n\x1b[31mInvalid container id\x1b[0m\r\n'); ws.close(); return;
+    }
     try {
-      const shell = u.searchParams.get('shell') || 'sh';
+      // Hanya dua shell yang diizinkan; nilai ini menjadi argv perintah exec.
+      const want = u.searchParams.get('shell') || 'sh';
+      const shell = ['sh', 'bash'].includes(want) ? want : 'sh';
       const ex = await dockerExtra.execCreate(target, [shell]);
       const sock = await dockerExtra.execStart(ex.Id);
       sock.on('data', (d) => ws.sendBin(d));

@@ -112,9 +112,18 @@ export async function gitClone(name, repo, branch, onLine) {
   const dir = dirOf(name);
   await fs.mkdir(STACKS, { recursive: true });
   await fs.rm(dir, { recursive: true, force: true });
+  // URL repositori hanya boleh http/https/ssh. Tanpa pemeriksaan ini sebuah
+  // nilai yang diawali '-' akan dibaca git sebagai opsi (mis. --upload-pack),
+  // yang berujung menjalankan perintah pilihan penyerang.
+  if (!/^(https?:\/\/|git@|ssh:\/\/)[^\s]+$/i.test(String(repo || ''))) {
+    throw new Error('Repository URL must start with https://, http://, ssh:// or git@');
+  }
+  if (branch && !/^[A-Za-z0-9._\/-]{1,120}$/.test(branch)) {
+    throw new Error('Invalid branch name');
+  }
   const args = ['clone', '--depth', '30'];
   if (branch) args.push('-b', branch);
-  args.push(repo, dir);
+  args.push('--', repo, dir);
   return new Promise((resolve) => {
     const e = run('git', args);
     e.onLine = onLine;
@@ -133,7 +142,10 @@ export const gitPull = (name, onLine) => new Promise((resolve) => {
   e.onLine = onLine; e.onDone = resolve;
 });
 export const gitCheckout = (name, ref, onLine) => new Promise((resolve) => {
-  const e = run('git', ['checkout', ref], { cwd: dirOf(name) });
+  if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(String(ref || ''))) {
+    onLine?.('ERROR: invalid ref'); resolve(1); return;
+  }
+  const e = run('git', ['checkout', '--', ref], { cwd: dirOf(name) });
   e.onLine = onLine; e.onDone = resolve;
 });
 export async function gitLog(name, n = 20) {

@@ -125,7 +125,18 @@ const DEDUPE_MS = 10 * 60 * 1000;
 let sendTelegram = null;
 export const setTelegramSender = (fn) => { sendTelegram = fn; };
 
+/* Pesan kejadian ditampilkan sebagai HTML agar <b> dan <code> terbaca rapi.
+   Karena sebagian isinya berasal dari luar (nama container, header IP),
+   semua tag selain daftar aman di bawah ini dilucuti. Tanpa ini, penyerang
+   bisa menitipkan <img onerror=...> lewat header X-Forwarded-For dan
+   skripnya berjalan di peramban admin. */
+const ALLOWED_TAGS = /^<\/?(b|i|code|em|strong)>$/i;
+function sanitize(html) {
+  return String(html).replace(/<[^>]*>?/g, (tag) => ALLOWED_TAGS.test(tag) ? tag : '');
+}
+
 export function emit(type, message = '', meta = {}) {
+  message = sanitize(message);
   const def = CATALOG[type];
   if (!def) return null;
   const sev = severityOf(type);

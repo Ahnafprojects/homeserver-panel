@@ -1015,14 +1015,14 @@ const server = http.createServer(async (req, res) => {
         let r;
         if (b.name.startsWith('db-')) {
           if (!b.container) return fail(res, 'Database container is required', 400);
-          dbaas.assertName(b.container, 'container');
-          dbaas.assertName(b.user || 'postgres', 'database user');
+          admin.assertName(b.container, 'container');
+          admin.assertName(b.user || 'postgres', 'database user');
           r = await stacks.runP('sh', ['-c',
             'gunzip -c "$1" | docker exec -i "$2" psql -U "$3"',
             'sh', f, b.container, b.user || 'postgres']);
         } else if (b.name.startsWith('volume-')) {
           if (!b.volume) return fail(res, 'Volume name is required', 400);
-          dbaas.assertName(b.volume, 'volume');
+          admin.assertName(b.volume, 'volume');
           r = await stacks.runP('docker', ['run', '--rm', '-v', `${b.volume}:/dst`,
             '-v', `${path.dirname(f)}:/src:ro`, 'alpine',
             'sh', '-c', `tar xzf /src/${path.basename(f)} -C /dst`]);

@@ -265,6 +265,15 @@ export async function injectSecrets(stackName) {
 /* ══ Cadangan ══ */
 const BACKUP_DIR = process.env.BACKUP_DIR || '/backup';
 
+/* Nama container, pengguna basis data, dan volume ikut ke perintah shell.
+   Hanya karakter yang memang sah untuk nama Docker/Postgres yang diterima —
+   tanpa ini, `db:x;rm -rf /:postgres` akan dieksekusi apa adanya. */
+const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/;
+export const assertName = (v, what) => {
+  if (!SAFE_NAME.test(String(v || ''))) throw new Error(`Invalid ${what} name`);
+  return String(v);
+};
+
 export async function listBackups() {
   try {
     await fsp.mkdir(BACKUP_DIR, { recursive: true });
@@ -286,13 +295,15 @@ export async function doBackup(what = 'data') {
   if (what.startsWith('db:')) {
     // Format: db:<container>:<user>
     const [, cont, user] = what.split(':');
+    assertName(cont, 'container');
+    assertName(user || 'postgres', 'database user');
     const file = path.join(BACKUP_DIR, `db-${cont}-${stamp}.sql.gz`);
     const { code, out } = await runP('sh', ['-c',
       `docker exec ${cont} pg_dumpall -U ${user || 'postgres'} | gzip > '${file}'`]);
     return { code, out, file };
   }
   if (what.startsWith('volume:')) {
-    const vol = what.split(':')[1];
+    const vol = assertName(what.split(':')[1], 'volume');
     const file = `volume-${vol}-${stamp}.tar.gz`;
     const { code, out } = await runP('docker', ['run', '--rm',
       '-v', `${vol}:/src:ro`, '-v', `${BACKUP_DIR}:/dst`,

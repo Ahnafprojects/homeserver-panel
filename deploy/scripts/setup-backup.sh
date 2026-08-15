@@ -113,17 +113,81 @@ MOUNT=/mnt/backup
 KEEP=7
 NOTIFY=/usr/local/bin/notify
 LOCK=/var/run/server-backup.lock
+DBDUMP_DIR=/srv/db-dumps
+STATE_FILE=/srv/panel-state/databases.json
 
 # Yang di-backup. Tambah/kurangi sesuai kebutuhan.
+# /srv/db-dumps diisi otomatis di bawah, sebelum rsync — lihat dump_databases().
 SOURCES=(
     /srv/data
     /srv/stacks
+    /srv/db-dumps
     /etc/server-alerts.conf
     /etc/samba/smb.conf
     /etc/fstab
 )
 
 notify_if_able() { [[ -x "$NOTIFY" ]] && "$NOTIFY" "$1" "$2" || true; }
+
+# Dump semua basis data yang dibuat lewat fitur Database di panel, SEBELUM
+# di-rsync. Volume Docker basis data TIDAK aman disalin mentah-mentah kalau
+# containernya lagi jalan (bisa korup) — jadi tiap engine di-dump ke format
+# text/archive dulu (pg_dumpall/mysqldump/mongodump/redis SAVE), baru hasil
+# dump-nya yang masuk /srv/db-dumps buat di-rsync seperti sumber lain.
+dump_databases() {
+    mkdir -p "$DBDUMP_DIR"
+    rm -f "$DBDUMP_DIR"/*.sql.gz "$DBDUMP_DIR"/*.archive.gz "$DBDUMP_DIR"/*.rdb 2>/dev/null || true
+    [[ -f "$STATE_FILE" ]] || return 0
+
+    local OK=0 FAIL=0 FAILED_NAMES=()
+    while IFS=$'\t' read -r NAME ENGINE CONTAINER PASSWORD; do
+        [[ -z "$NAME" ]] && continue
+        # Nama & container sudah disanitasi panel sendiri (safeName di
+        # dbaas.js), tapi tetap divalidasi ulang sebelum masuk shell.
+        [[ "$NAME" =~ ^[A-Za-z0-9_.-]+$ && "$CONTAINER" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+        [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null)" == "true" ]] || continue
+
+        case "$ENGINE" in
+            postgres)
+                docker exec "$CONTAINER" sh -c 'pg_dumpall -U "$POSTGRES_USER"' 2>/dev/null \
+                    | gzip > "$DBDUMP_DIR/$NAME.sql.gz"
+                ;;
+            mariadb)
+                docker exec "$CONTAINER" sh -c 'mysqldump -u root -p"$MARIADB_ROOT_PASSWORD" --all-databases' 2>/dev/null \
+                    | gzip > "$DBDUMP_DIR/$NAME.sql.gz"
+                ;;
+            mongo)
+                docker exec "$CONTAINER" sh -c \
+                    'mongodump --archive --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' 2>/dev/null \
+                    | gzip > "$DBDUMP_DIR/$NAME.archive.gz"
+                ;;
+            redis)
+                # Redis tidak nyimpen passwordnya sendiri sebagai env var
+                # (dikasih lewat --requirepass pas start), jadi diambil dari
+                # state panel. SAVE dulu biar dump.rdb dijamin ter-update.
+                docker exec "$CONTAINER" redis-cli -a "$PASSWORD" --no-auth-warning SAVE >/dev/null 2>&1
+                docker cp "$CONTAINER:/data/dump.rdb" "$DBDUMP_DIR/$NAME.rdb" >/dev/null 2>&1
+                ;;
+            *) continue ;;
+        esac
+
+        if [[ -s "$DBDUMP_DIR/$NAME."* ]] 2>/dev/null; then
+            OK=$((OK + 1))
+        else
+            FAIL=$((FAIL + 1)); FAILED_NAMES+=("$NAME")
+        fi
+    done < <(node -e '
+        const fs = require("fs");
+        try {
+            const list = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            for (const i of list) {
+                console.log([i.name, i.engine, i.container, i.password || ""].join("\t"));
+            }
+        } catch {}
+    ' "$STATE_FILE" 2>/dev/null)
+
+    echo "$OK|$FAIL|${FAILED_NAMES[*]:-}"
+}
 
 # Cegah dua backup jalan bersamaan (mis. timer + colok drive).
 exec 9>"$LOCK" || exit 0
@@ -148,6 +212,11 @@ if [[ -n "${USEDPCT:-}" ]] && (( USEDPCT >= 90 )); then
 "Terpakai <b>${USEDPCT}%</b>.
 Snapshot tertua akan dihapus, tapi sebaiknya pakai drive lebih besar."
 fi
+
+DB_RESULT=$(dump_databases)
+DB_OK=$(cut -d'|' -f1 <<<"$DB_RESULT")
+DB_FAIL=$(cut -d'|' -f2 <<<"$DB_RESULT")
+DB_FAILED_NAMES=$(cut -d'|' -f3 <<<"$DB_RESULT")
 
 DEST="$MOUNT/snapshots"
 mkdir -p "$DEST"
@@ -184,11 +253,15 @@ if rsync -ax --delete --stats \
     NSNAP=$(find "$DEST" -maxdepth 1 -type d -name '20*' | wc -l | tr -d ' ')
     FREE=$(df -Ph "$MOUNT" | awk 'NR==2{print $4}')
 
+    DBLINE="Basis data: ${DB_OK} berhasil di-dump"
+    [[ "${DB_FAIL:-0}" -gt 0 ]] && DBLINE="${DBLINE}, ${DB_FAIL} GAGAL (${DB_FAILED_NAMES})"
+
     notify_if_able "💾 Backup selesai" \
 "Snapshot: <code>${STAMP}</code>
 Data baru ditulis: ${XFER:-?}
 Ukuran snapshot: ${SIZE:-?}
 Jumlah snapshot: ${NSNAP} (disimpan ${KEEP} terakhir)
+${DBLINE}
 Sisa ruang drive: ${FREE}
 Durasi: ${DUR}s"
     rm -f "$LOGF"
@@ -302,6 +375,9 @@ cat <<EOF
   Yang di-backup:
     /srv/data                  data pribadi lu
     /srv/stacks                file docker-compose
+    /srv/db-dumps               dump semua basis data dari fitur Database panel
+                                 (Postgres/MariaDB/Mongo/Redis, dump ulang tiap
+                                 backup jalan — bukan salinan volume mentah)
     /etc/server-alerts.conf    konfigurasi alert
     /etc/samba/smb.conf        konfigurasi share
     /etc/fstab
@@ -316,15 +392,13 @@ cat <<EOF
     sudo nano /usr/local/bin/server-backup
 
 EOF
-warn "Volume Docker TIDAK ikut ter-backup."
-echo "  Data di dalam volume Docker (mis. database Postgres) tidak ada di"
-echo "  /srv/data. Untuk database, dump dulu baru di-backup — menyalin file"
-echo "  database yang sedang jalan bisa menghasilkan backup yang korup:"
-echo
-echo "    docker exec <container-db> pg_dumpall -U postgres \\"
-echo "      > /srv/data/db-\$(date +%F).sql"
-echo
-echo "  Taruh perintah itu di cron/timer sendiri sebelum jam 02:00."
+warn "Basis data di-backup lewat dump, bukan volume mentah."
+echo "  Menyalin file volume Docker basis data yang lagi jalan bisa hasilnya"
+echo "  korup, jadi tiap backup jalan, server-backup dump dulu tiap basis data"
+echo "  yang dibuat lewat fitur Database di panel (baca /srv/panel-state/"
+echo "  databases.json) ke /srv/db-dumps, baru itu yang ikut ter-rsync."
+echo "  Basis data eksternal (yang di-'Sambungkan' bukan 'Buat baru' di panel)"
+echo "  TIDAK ikut, karena bukan panel yang mengelola containernya."
 echo
 warn "Flashdisk BUKAN medium backup yang andal."
 echo "  Flash drive mati mendadak tanpa peringatan (tidak ada SMART)."

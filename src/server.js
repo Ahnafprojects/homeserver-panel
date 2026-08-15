@@ -1441,6 +1441,48 @@ const server = http.createServer(async (req, res) => {
         return fsSync.createReadStream(f).pipe(res);
       }
 
+      // ---- Status backup HDD otomatis (setup-backup.sh / server-backup.timer) ----
+      // Ini SISTEM TERPISAH dari /api/backups di atas (yang cuma tau soal
+      // backup manual "Back up now"): backup ini jalan lewat systemd timer di
+      // host, di luar kendali panel — jadi statusnya harus dibaca langsung
+      // dari host, bukan disimpan panel sendiri.
+      if (p === '/api/backups/hdd' && req.method === 'GET') {
+        const HR = '/host/root';
+        const mountsTxt = await fs.readFile('/host/proc/1/mounts', 'utf8').catch(() => '');
+        const mounted = mountsTxt.split('\n').some((l) => l.split(' ')[1] === '/mnt/backup');
+        let usage = null;
+        if (mounted) {
+          try {
+            const st = fsSync.statfsSync(`${HR}/mnt/backup`);
+            const total = st.blocks * st.bsize, free = st.bfree * st.bsize;
+            usage = { total, free, used: total - free };
+          } catch {}
+        }
+        let snapshots = [];
+        if (mounted) {
+          try {
+            const names = await fs.readdir(`${HR}/mnt/backup/snapshots`);
+            for (const n of names) {
+              if (!/^\d{4}-\d{2}-\d{2}_\d{4}$/.test(n)) continue;
+              const st = await fs.stat(`${HR}/mnt/backup/snapshots/${n}`).catch(() => null);
+              if (st) snapshots.push({ name: n, at: st.mtimeMs });
+            }
+          } catch {}
+        }
+        snapshots.sort((a, b) => b.at - a.at);
+        const timerR = await stacks.runP('nsenter',
+          ['-t', '1', '-m', '-u', '-n', '-i', 'systemctl', 'is-active', 'server-backup.timer']);
+        const dbNames = await fs.readdir(`${HR}/srv/db-dumps`).catch(() => []);
+        return ok(res, {
+          mounted, usage,
+          timerActive: timerR.out.trim() === 'active',
+          lastBackup: snapshots[0]?.at || null,
+          snapshotCount: snapshots.length,
+          snapshots: snapshots.slice(0, 10),
+          dbDumpCount: dbNames.filter((n) => /\.(sql\.gz|archive\.gz|rdb)$/.test(n)).length,
+        });
+      }
+
       // ---- Stack: compose & git ----
       if (p === '/api/stacks' && req.method === 'GET') return ok(res, { stacks: await stacks.listStacks() });
       if ((m = p.match(/^\/api\/stacks\/([^/]+)$/))) {

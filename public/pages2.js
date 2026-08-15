@@ -542,6 +542,41 @@ VIEWS.vault = () => {
         el('div', { class: 'row' }, b)));
     };
 
+    // ── Backup otomatis ke HDD (server-backup.timer, di luar panel) ── beda
+    // sistem dari daftar di bawah (yang cuma tau soal backup manual). Status
+    // ini dibaca langsung dari host, jadi selalu mencerminkan kondisi asli.
+    const hddArea = el('div', { style: 'margin-bottom:16px' });
+    async function paintHdd() {
+      try {
+        const h = await api('/backups/hdd');
+        if (!h.mounted) {
+          hddArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b' },
+            el('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' },
+              el('span', { class: 'pill bad' }, 'HDD tidak terpasang'),
+              el('span', { style: 'font-size:11.5px;color:var(--tx-3)' },
+                'Backup otomatis harian (02:00) tidak akan jalan sampai drive-nya dicolok & ter-mount di /mnt/backup.')))));
+          return;
+        }
+        const pct = h.usage ? Math.round((h.usage.used / h.usage.total) * 100) : 0;
+        hddArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b' },
+          el('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' },
+            el('span', { class: 'pill ok' }, 'HDD backup terpasang'),
+            el('span', { class: 'pill' + (h.timerActive ? '' : ' bad') },
+              h.timerActive ? 'Jadwal aktif (tiap hari 02:00)' : 'Jadwal MATI'),
+            el('span', { class: 'pill' }, `${h.snapshotCount} snapshot`),
+            h.dbDumpCount ? el('span', { class: 'pill' }, `${h.dbDumpCount} dump basis data`) : '',
+            el('span', { class: 'sp' }),
+            el('span', { style: 'font-size:11.5px;color:var(--tx-3)' },
+              h.lastBackup ? `Terakhir: ${ago(h.lastBackup)}` : 'Belum pernah backup')),
+          h.usage ? el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:8px' },
+            `${bytes(h.usage.used)} terpakai dari ${bytes(h.usage.total)} di drive backup (${pct}%)`) : '')));
+      } catch {
+        hddArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3)' },
+          'Gagal cek status HDD backup.'));
+      }
+    }
+    paintHdd();
+
     const total = backups.reduce((a, b2) => a + b2.size, 0);
     const countPill = el('span', { class: 'pill' }, `${backups.length} files`);
     const listArea = el('div');
@@ -578,6 +613,9 @@ VIEWS.vault = () => {
     paint();
 
     body.replaceChildren(
+      el('div', { class: 'sec' }, 'Backup otomatis ke HDD'),
+      hddArea,
+      el('div', { class: 'sec' }, 'Backup manual'),
       el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
         countPill, el('span', { class: 'pill' }, bytes(total)),
         search, el('span', { class: 'sp' }), mk),

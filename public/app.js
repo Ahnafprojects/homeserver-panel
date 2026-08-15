@@ -751,20 +751,30 @@ VIEWS.files = () => {
   const q = (extra = '') => `root=${encodeURIComponent(curRoot)}${extra}`;
 
   const fileInput = el('input', { type: 'file', multiple: '', style: 'display:none' });
-  document.body.append(fileInput);
+  // webkitdirectory bikin dialog pilih file jadi "pilih folder" — begitu
+  // dipilih, tiap File dapat f.webkitRelativePath ("folder/sub/nama.ext")
+  // yang dipakai sebagai nama tujuan supaya struktur foldernya ikut kebawa.
+  const folderInput = el('input', { type: 'file', multiple: '',
+    webkitdirectory: '', directory: '', style: 'display:none' });
+  document.body.append(fileInput, folderInput);
   fileInput.onchange = async () => {
     for (const f of fileInput.files) await uploadInto(cwd, f);
-    fileInput.value = ''; load();
+    fileInput.value = ''; refreshTree(); load();
   };
-  async function uploadInto(destPath, f) {
+  folderInput.onchange = async () => {
+    for (const f of folderInput.files) await uploadInto(cwd, f, f.webkitRelativePath || f.name);
+    folderInput.value = ''; refreshTree(); load();
+  };
+  async function uploadInto(destPath, f, relName = f.name) {
     try {
-      await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(f.name)}`,
+      await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(relName)}`,
         { method: 'POST', body: f });
-      toast(`${f.name} diunggah`);
-    } catch { toast('Gagal mengunggah ' + f.name); }
+      toast(`${relName} diunggah`);
+    } catch { toast('Gagal mengunggah ' + relName); }
   }
 
   addAction('Unggah', 'up', () => fileInput.click(), 'btn pri');
+  addAction('Unggah folder', 'up', () => folderInput.click());
   addAction('Folder baru', 'plus', async () => {
     const name = prompt('Nama folder baru:');
     if (!name) return;
@@ -809,6 +819,31 @@ VIEWS.files = () => {
     } catch (e) { toast(e.message); }
   }
 
+  // Telusuri satu entry drag & drop (FileSystemEntry) sampai ke file-file di
+  // dalamnya, karena drop folder dari file explorer OS cuma dikasih ke JS
+  // lewat DataTransferItem.webkitGetAsEntry() — dataTransfer.files biasa
+  // tidak bisa masuk ke isi foldernya sama sekali.
+  async function readEntryFiles(entry, prefix = '') {
+    if (entry.isFile) {
+      return new Promise((res) => entry.file((f) => res([[f, prefix + f.name]]), () => res([])));
+    }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      const kids = await new Promise((res) => {
+        const all = [];
+        const readBatch = () => reader.readEntries((batch) => {
+          if (!batch.length) return res(all);
+          all.push(...batch); readBatch();
+        }, () => res(all));
+        readBatch();
+      });
+      const out = [];
+      for (const k of kids) out.push(...await readEntryFiles(k, prefix + entry.name + '/'));
+      return out;
+    }
+    return [];
+  }
+
   // Pindahkan item lewat drag & drop, atau unggah kalau yang di-drop berasal
   // dari luar jendela (file explorer OS). destPath = folder tujuan.
   async function handleDrop(e, destPath) {
@@ -826,6 +861,15 @@ VIEWS.files = () => {
           return;
         }
       } catch {}
+    }
+    const items = e.dataTransfer.items;
+    const entries = items?.length ? [...items].map((it) => it.webkitGetAsEntry?.()).filter(Boolean) : [];
+    if (entries.length) {
+      for (const en of entries) {
+        for (const [f, rel] of await readEntryFiles(en)) await uploadInto(destPath, f, rel);
+      }
+      refreshTree(); load();
+      return;
     }
     if (e.dataTransfer.files?.length) {
       for (const f of e.dataTransfer.files) await uploadInto(destPath, f);

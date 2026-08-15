@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const H = process.env.HOST_PROC || '/host/proc';
 const SYS = process.env.HOST_SYS || '/host/sys';
+const ROOT = process.env.HOST_ROOT || '/host/root';
 
 const read = async (p) => { try { return await fs.readFile(p, 'utf8'); } catch { return ''; } };
 
@@ -119,6 +120,86 @@ export async function network() {
 export async function uptime() {
   const v = +(await read(`${H}/uptime`)).split(' ')[0];
   return isNaN(v) ? 0 : v;
+}
+
+// Standar Linux HZ (jumlah tick per detik yang dipakai kernel di
+// /proc/[pid]/stat) — hampir selalu 100 di kernel modern x86/arm.
+const CLK_TCK = 100;
+let prevProc = new Map(); // pid -> { ticks, at }
+let userMap = null, userMapAt = 0;
+
+async function usernames() {
+  // /etc/passwd host jarang berubah — cache 60 detik biar tidak baca ulang
+  // tiap poll.
+  if (userMap && Date.now() - userMapAt < 60000) return userMap;
+  const txt = await read(`${ROOT}/etc/passwd`);
+  const map = new Map();
+  for (const line of txt.split('\n')) {
+    const [name, , uid] = line.split(':');
+    if (name && uid) map.set(uid, name);
+  }
+  userMap = map; userMapAt = Date.now();
+  return map;
+}
+
+// Daftar proses ala Task Manager/Activity Monitor — dibaca langsung dari
+// /proc/[pid]/* milik HOST (bukan container ini), soalnya panel jalan
+// dengan pid:host jadi bisa lihat proses host apa adanya. %CPU dihitung
+// manual dari delta utime+stime antar dua kali polling (metode yang sama
+// dipakai `top`), karena BusyBox ps di image ini tidak punya opsi --sort
+// atau kolom %cpu bawaan.
+export async function processes() {
+  const uids = await usernames();
+  let names;
+  try { names = await fs.readdir(H); } catch { return []; }
+  const now = Date.now();
+  const alive = new Set();
+  const out = [];
+
+  await Promise.all(names.filter((n) => /^\d+$/.test(n)).map(async (pid) => {
+    alive.add(pid);
+    try {
+      const statTxt = (await read(`${H}/${pid}/stat`)).trim();
+      const m = statTxt.match(/^(\d+)\s+\((.*)\)\s+(\S)\s+(.*)$/);
+      if (!m) return;
+      const comm = m[2], state = m[3];
+      const rest = m[4].trim().split(/\s+/);
+      const ppid = +rest[0];
+      const utime = +rest[10], stime = +rest[11];
+      const ticks = utime + stime;
+
+      const statusTxt = await read(`${H}/${pid}/status`);
+      const uidM = statusTxt.match(/^Uid:\s+(\d+)/m);
+      const rssM = statusTxt.match(/^VmRSS:\s+(\d+)\s*kB/m);
+      const uid = uidM ? uidM[1] : null;
+
+      let cmd = (await read(`${H}/${pid}/cmdline`)).split('\0').filter(Boolean).join(' ');
+      if (!cmd) cmd = `[${comm}]`;
+
+      const prev = prevProc.get(pid);
+      let cpuPct = 0;
+      if (prev) {
+        const dt = (now - prev.at) / 1000;
+        if (dt > 0) cpuPct = Math.max(0, ((ticks - prev.ticks) / CLK_TCK) / dt * 100);
+      }
+      prevProc.set(pid, { ticks, at: now });
+
+      out.push({
+        pid: +pid, ppid, user: uid != null ? (uids.get(uid) || uid) : '?',
+        name: comm, cmd, state, cpu: +cpuPct.toFixed(1),
+        rss: rssM ? +rssM[1] * 1024 : 0,
+      });
+    } catch {}
+  }));
+
+  for (const k of prevProc.keys()) if (!alive.has(k)) prevProc.delete(k);
+  return out;
+}
+
+export async function killProcess(pid, signal = 'TERM') {
+  const p = +pid;
+  if (!Number.isInteger(p) || p <= 1) throw new Error('PID tidak valid');
+  process.kill(p, signal === 'KILL' ? 'SIGKILL' : 'SIGTERM');
 }
 
 export async function snapshot() {

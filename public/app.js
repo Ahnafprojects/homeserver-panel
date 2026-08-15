@@ -308,11 +308,77 @@ VIEWS.overview = () => {
   };
   const secTitle = el('div', { class: 'sec', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
     el('span', {}, 'Riwayat'), el('span', { class: 'sp' }), rangeSel, customBar);
+
+  // ── Proses (Task Manager) — daftar proses HOST asli (bukan proses di
+  // dalam container panel), dibaca langsung dari /proc lewat pid:host.
+  // Sortable per kolom, bisa dicari, bisa dimatikan.
+  let procQ = '', procSort = { key: 'cpu', dir: -1 }, procData = [];
+  const procWrap = el('div', { class: 'card' });
+  const procSearch = searchBox('Cari proses (nama, perintah, user, PID)…', v => { procQ = v; paintProc(); });
+  const procCount = el('span', { class: 'pill' });
+  const procSecTitle = el('div', { class: 'sec', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+    el('span', {}, 'Proses'), procCount, el('span', { class: 'sp' }), procSearch);
+
+  const COLS = [
+    { key: 'name', label: 'Proses' }, { key: 'user', label: 'User' },
+    { key: 'pid', label: 'PID' }, { key: 'cpu', label: 'CPU%' }, { key: 'rss', label: 'RAM' },
+  ];
+  function sortHeader(col) {
+    const active = procSort.key === col.key;
+    const th = el('th', { style: 'cursor:pointer;user-select:none;white-space:nowrap' },
+      col.label + (active ? (procSort.dir === 1 ? ' ▲' : ' ▼') : ''));
+    th.onclick = () => {
+      procSort = { key: col.key, dir: active ? -procSort.dir : (col.key === 'name' || col.key === 'user' ? 1 : -1) };
+      paintProc();
+    };
+    return th;
+  }
+
+  async function killProc(pid, name) {
+    if (!confirm(`Matikan proses "${name}" (PID ${pid})? Data yang belum tersimpan di proses itu bisa hilang.`)) return;
+    try { await api(`/system/processes/${pid}/kill`, { method: 'POST', body: JSON.stringify({ signal: 'TERM' }) });
+      toast('Sinyal berhenti terkirim'); loadProc(); } catch (e) { toast(e.message); }
+  }
+
+  function paintProc() {
+    let shown = procData.filter(p2 => matches(procQ, p2.name, p2.cmd, p2.user, p2.pid));
+    const { key, dir } = procSort;
+    shown = shown.slice().sort((a, b) => {
+      const av = a[key], bv = b[key];
+      return typeof av === 'string' ? av.localeCompare(bv) * dir : (av - bv) * dir;
+    });
+    procCount.textContent = `${shown.length} / ${procData.length} proses`;
+    const tb = el('tbody', {}, ...shown.map(p2 => {
+      const kill = el('button', { class: 'ib', title: 'Matikan proses', html: ic('trash', 14) });
+      kill.onclick = () => killProc(p2.pid, p2.name);
+      return el('tr', {},
+        el('td', {}, el('div', { title: p2.cmd,
+          style: 'max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' },
+          p2.name, p2.cmd && p2.cmd !== `[${p2.name}]` && !p2.cmd.startsWith(p2.name)
+            ? el('span', { style: 'color:var(--tx-3);margin-left:6px;font-size:11px' }, p2.cmd) : '')),
+        el('td', { style: 'color:var(--tx-3)' }, p2.user),
+        el('td', { class: 'mono', style: 'color:var(--tx-3)' }, p2.pid),
+        el('td', {}, p2.cpu >= 50 ? el('span', { class: 'pill bad' }, p2.cpu + '%')
+          : p2.cpu >= 15 ? el('span', { class: 'pill warn' }, p2.cpu + '%') : p2.cpu + '%'),
+        el('td', {}, bytes(p2.rss)),
+        el('td', { style: 'text-align:right' }, kill));
+    }));
+    procWrap.replaceChildren(el('div', { class: 'tbl-wrap' },
+      el('table', {}, el('thead', {}, el('tr', {}, ...COLS.map(sortHeader), el('th', {}, ''))), tb)));
+  }
+
+  async function loadProc() {
+    try { procData = (await api('/system/processes')).processes; paintProc(); }
+    catch (e) { procWrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
   const root = el('div', {},
     el('div', { class: 'sec' }, 'Resources'), stats,
     secTitle, chartsWrap,
-    el('div', { class: 'sec' }, 'System'), infoCard);
+    el('div', { class: 'sec' }, 'System'), infoCard,
+    procSecTitle, procWrap);
   mount(root);
+  every(loadProc, 4000);
 
   const mk = (key, icon, val, meta, pct) => {
     const bar = pct != null ? el('div', { class: 'bar' },

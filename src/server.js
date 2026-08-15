@@ -666,6 +666,16 @@ const server = http.createServer(async (req, res) => {
             cpus: info.NCPU, mem: info.MemTotal } : null,
         });
       }
+      // ---- Task Manager: proses host asli (pid:host), bukan proses container ----
+      if (p === '/api/system/processes' && req.method === 'GET') {
+        return ok(res, { processes: await sys.processes() });
+      }
+      if ((m = p.match(/^\/api\/system\/processes\/(\d+)\/kill$/)) && req.method === 'POST') {
+        const b = await readJson(req).catch(() => ({}));
+        await sys.killProcess(m[1], b.signal === 'KILL' ? 'KILL' : 'TERM');
+        auth.audit(ses.username, 'proses-matikan', `pid ${m[1]} (${b.signal || 'TERM'})`);
+        return ok(res);
+      }
 
 
       // ---- Pengguna, 2FA, audit ----

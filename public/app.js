@@ -736,7 +736,12 @@ VIEWS.files = () => {
   let cwd = '';
   let curRoot = 'data';
   let view = localStorage.getItem('files.view') === 'list' ? 'list' : 'grid';
-  let selName = null;
+  // Multi-select: selNames = item yang dicentang, selAnchor = klik terakhir
+  // (titik awal buat Shift+klik pilih rentang), lastItems = daftar item yang
+  // lagi ditampilkan urut tampilan (dipakai buat hitung rentang & buat Ctrl+A).
+  let selNames = new Set();
+  let selAnchor = null;
+  let lastItems = [];
   let qFilter = '';
   const ROOT_LABELS = { data: 'data', stacks: 'stacks', host: 'laptop (semua file)' };
   const crumb = el('div', { class: 'crumb' });
@@ -754,14 +759,33 @@ VIEWS.files = () => {
     + 'border-right:1px solid var(--line);padding:6px 4px' });
   const wrap = el('div', { class: 'card', style: 'flex:1;min-width:0;overflow:auto;'
     + 'border-radius:0;border:none' });
+  // Bar aksi massal — muncul begitu ada item terpilih (klik+Ctrl/Cmd,
+  // Shift+klik buat rentang, atau Ctrl/Cmd+A buat pilih semua). Sebelumnya
+  // cuma bisa pilih 1 item jadi hapus banyak file harus satu-satu.
+  const selCount = el('span', { style: 'font-weight:500' }, '');
+  const btnDelSel = el('button', { class: 'btn danger',
+    html: ic('trash', 13) + '<span>Hapus</span>' });
+  const btnClearSel = el('button', { class: 'btn' }, 'Batal');
+  const selBar = el('div', { class: 'row', style: 'padding:8px 14px;border-bottom:1px solid var(--line);'
+    + 'background:var(--acc-soft);display:none' },
+    selCount, el('span', { class: 'sp' }), btnDelSel, btnClearSel);
+  function clearSel() { selNames.clear(); selAnchor = null; paintSel(); renderList(lastItems); }
+  function paintSel() {
+    selBar.style.display = selNames.size ? 'flex' : 'none';
+    selCount.textContent = `${selNames.size} dipilih`;
+  }
+  btnClearSel.onclick = clearSel;
+  btnDelSel.onclick = () => deleteSelected();
+
   mount(el('div', { style: 'display:flex;flex-direction:column;height:100%;padding:14px 16px' },
     el('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap;flex:0 0 auto' },
       rootSel, crumb, el('span', { class: 'sp' }), search, hostWarn, viewToggle),
+    selBar,
     el('div', { class: 'card', style: 'display:flex;align-items:stretch;flex:1;min-height:0;overflow:hidden' },
       tree, wrap)), { full: true });
   rootSel.value = curRoot;
   rootSel.onchange = () => { curRoot = rootSel.value; cwd = '';
-    hostWarn.style.display = curRoot === 'host' ? '' : 'none'; resetTree(); load(); };
+    hostWarn.style.display = curRoot === 'host' ? '' : 'none'; clearSel(); resetTree(); load(); };
 
   function setView(v) { view = v; localStorage.setItem('files.view', v);
     const on = (b, is) => { b.style.background = is ? 'var(--acc)' : ''; b.style.color = is ? '#fff' : ''; };
@@ -785,20 +809,21 @@ VIEWS.files = () => {
   // folder isi banyak kelihatan kayak macet/hang padahal jalan.
   const upx = el('div', { class: 'upx', style: 'display:none' });
   document.body.append(upx);
-  let upxN = { done: 0, total: 0 };
+  let upxN = { done: 0, total: 0, verb: 'Mengunggah' };
   function upxPaint(name, frac) {
     upx.replaceChildren(
       el('div', { class: 'upx-row' },
-        el('span', {}, `Mengunggah ${Math.min(upxN.done + 1, upxN.total)}/${upxN.total}`),
+        el('span', {}, `${upxN.verb} ${Math.min(upxN.done + 1, upxN.total)}/${upxN.total}`),
         el('span', {}, Math.round(frac * 100) + '%')),
       el('div', { class: 'upx-name' }, name),
       el('div', { class: 'upx-bar' }, el('i', { style: `width:${Math.round(frac * 100)}%` })));
   }
-  function upxStart(total) {
-    upxN = { done: 0, total }; upx.style.display = ''; upxPaint('Menyiapkan…', 0);
+  function upxStart(total, verb = 'Mengunggah') {
+    upxN = { done: 0, total, verb }; upx.style.display = ''; upxPaint('Menyiapkan…', 0);
   }
-  function upxStop() {
-    upx.replaceChildren(el('div', { class: 'upx-row' }, el('span', {}, `Selesai · ${upxN.total} berkas`)));
+  function upxStop(label) {
+    upx.replaceChildren(el('div', { class: 'upx-row' },
+      el('span', {}, label || `Selesai · ${upxN.total} berkas`)));
     setTimeout(() => { upx.style.display = 'none'; }, 1200);
   }
 
@@ -826,6 +851,26 @@ VIEWS.files = () => {
     upxStart(files.length);
     for (const [f, rel] of files) await uploadInto(destPath, f, rel);
     upxStop(); refreshTree(); load();
+  }
+
+  async function deleteSelected() {
+    const names = [...selNames];
+    if (!names.length) return;
+    if (!confirm(`Hapus ${names.length} item terpilih? Isi folder ikut terhapus. `
+      + 'Tindakan ini tidak bisa dibatalkan.')) return;
+    upxStart(names.length, 'Menghapus');
+    let failed = 0;
+    for (const name of names) {
+      upxPaint(name, 0.5);
+      try {
+        await api('/files/delete', { method: 'POST',
+          body: JSON.stringify({ path: (cwd ? cwd + '/' : '') + name, root: curRoot }) });
+      } catch { failed++; }
+      upxN.done++;
+    }
+    upxStop(failed ? `Selesai, ${failed} gagal dihapus` : `Selesai · ${names.length} item dihapus`);
+    selNames.clear(); selAnchor = null; paintSel();
+    refreshTree(); load();
   }
 
   fileInput.onchange = async () => {
@@ -1064,9 +1109,9 @@ VIEWS.files = () => {
           + 'padding:10px 6px;border-radius:8px;cursor:default;text-align:center'
         : 'display:flex;align-items:center;gap:10px;padding:6px 10px;'
           + 'border-radius:6px;cursor:default' });
-    if (selName === it.name) cell.style.background = 'var(--acc-soft)';
-    cell.onmouseenter = () => { if (selName !== it.name) cell.style.background = 'var(--sunken)'; };
-    cell.onmouseleave = () => { if (selName !== it.name) cell.style.background = ''; };
+    if (selNames.has(it.name)) cell.style.background = 'var(--acc-soft)';
+    cell.onmouseenter = () => { if (!selNames.has(it.name)) cell.style.background = 'var(--sunken)'; };
+    cell.onmouseleave = () => { if (!selNames.has(it.name)) cell.style.background = ''; };
     if (view === 'grid') {
       cell.append(
         el('div', { style: 'height:44px;display:flex;align-items:center;justify-content:center;'
@@ -1087,19 +1132,69 @@ VIEWS.files = () => {
         el('div', { style: 'flex:0 0 130px;font-size:11px;color:var(--tx-3);text-align:right' },
           it.mtime ? new Date(it.mtime).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : '—'));
     }
-    cell.onclick = () => { selName = it.name; load(); };
+    // Klik biasa = pilih cuma ini. Ctrl/Cmd+klik = tambah/lepas dari
+    // pilihan tanpa buang yang lain. Shift+klik = pilih rentang dari klik
+    // terakhir (selAnchor) sampai item ini, kayak Explorer/Finder.
+    cell.onclick = (e) => {
+      const idx = lastItems.findIndex((x) => x.name === it.name);
+      if (e.shiftKey && selAnchor != null) {
+        const aIdx = lastItems.findIndex((x) => x.name === selAnchor);
+        if (aIdx >= 0 && idx >= 0) {
+          const [lo, hi] = aIdx < idx ? [aIdx, idx] : [idx, aIdx];
+          selNames = new Set(lastItems.slice(lo, hi + 1).map((x) => x.name));
+        }
+      } else if (e.ctrlKey || e.metaKey) {
+        if (selNames.has(it.name)) selNames.delete(it.name); else selNames.add(it.name);
+        selAnchor = it.name;
+      } else {
+        selNames = new Set([it.name]);
+        selAnchor = it.name;
+      }
+      paintSel(); renderList(lastItems);
+    };
     cell.ondblclick = () => open(it);
-    cell.oncontextmenu = (e) => { e.preventDefault(); selName = it.name; itemMenu(e, it, full); };
+    cell.oncontextmenu = (e) => {
+      e.preventDefault();
+      if (!selNames.has(it.name)) {
+        selNames = new Set([it.name]); selAnchor = it.name; paintSel(); renderList(lastItems);
+      }
+      itemMenu(e, it, full);
+    };
     cell.ondragstart = (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', JSON.stringify({ from: full }));
     };
     if (it.dir) {
       cell.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); cell.style.background = 'var(--acc-soft)'; };
-      cell.ondragleave = () => { cell.style.background = selName === it.name ? 'var(--acc-soft)' : ''; };
+      cell.ondragleave = () => { cell.style.background = selNames.has(it.name) ? 'var(--acc-soft)' : ''; };
       cell.ondrop = (e) => handleDrop(e, full);
     }
     return cell;
+  }
+
+  // renderList cuma menggambar ulang dari lastItems (tanpa panggil API lagi)
+  // — dipisah dari load() supaya klik pilih/Ctrl+A/Shift+klik terasa
+  // instan, bukan nunggu round-trip network tiap kali ganti seleksi.
+  function renderList(items, allLen = items.length) {
+    if (!items.length) {
+      wrap.replaceChildren(el('div', { class: 'empty', html: ic('folder', 30, 1.3)
+        + `<div>${allLen ? 'No matching files' : 'Empty folder'}</div>` }));
+      $('#sub').textContent = '0 item';
+      return;
+    }
+    const list = el('div', { style: view === 'grid'
+      ? 'display:flex;flex-wrap:wrap;gap:2px;padding:14px;align-content:flex-start'
+      : 'display:flex;flex-direction:column;padding:8px' });
+    if (view === 'list') {
+      list.append(el('div', { style: 'display:flex;align-items:center;gap:10px;padding:4px 10px 8px;'
+        + 'font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.03em' },
+        el('div', { style: 'flex:0 0 20px' }), el('div', { style: 'flex:1' }, 'Nama'),
+        el('div', { style: 'flex:0 0 70px;text-align:right' }, 'Ukuran'),
+        el('div', { style: 'flex:0 0 130px;text-align:right' }, 'Diubah')));
+    }
+    items.forEach(it => list.append(itemCell(it, (cwd ? cwd + '/' : '') + it.name)));
+    wrap.replaceChildren(list);
+    $('#sub').textContent = `${items.length} item`;
   }
 
   async function load() {
@@ -1107,27 +1202,36 @@ VIEWS.files = () => {
     try {
       const all = (await api(`/files/list?${q()}&path=${encodeURIComponent(cwd)}`)).items;
       const items = qFilter ? all.filter(it => matches(qFilter, it.name)) : all;
-      if (!items.length) {
-        wrap.replaceChildren(el('div', { class: 'empty', html: ic('folder', 30, 1.3)
-          + `<div>${all.length ? 'No matching files' : 'Empty folder'}</div>` }));
-        $('#sub').textContent = '0 item';
-        return;
-      }
-      const list = el('div', { style: view === 'grid'
-        ? 'display:flex;flex-wrap:wrap;gap:2px;padding:14px;align-content:flex-start'
-        : 'display:flex;flex-direction:column;padding:8px' });
-      if (view === 'list') {
-        list.append(el('div', { style: 'display:flex;align-items:center;gap:10px;padding:4px 10px 8px;'
-          + 'font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.03em' },
-          el('div', { style: 'flex:0 0 20px' }), el('div', { style: 'flex:1' }, 'Nama'),
-          el('div', { style: 'flex:0 0 70px;text-align:right' }, 'Ukuran'),
-          el('div', { style: 'flex:0 0 130px;text-align:right' }, 'Diubah')));
-      }
-      items.forEach(it => list.append(itemCell(it, (cwd ? cwd + '/' : '') + it.name)));
-      wrap.replaceChildren(list);
-      $('#sub').textContent = `${items.length} item`;
+      lastItems = items;
+      // Item yang dulu terpilih tapi sekarang hilang (dihapus/rename dari
+      // tempat lain, atau habis auto-refresh 15 detik) jangan nyangkut di
+      // hitungan "N dipilih".
+      const names = new Set(items.map(it => it.name));
+      let changed = false;
+      for (const n of selNames) if (!names.has(n)) { selNames.delete(n); changed = true; }
+      if (changed) paintSel();
+      renderList(items, all.length);
     } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
+
+  // Ctrl/Cmd+A pilih semua item di folder ini (biar tidak nabrak select-all
+  // teks bawaan browser saat fokus lagi di kotak cari/input lain). Esc
+  // membatalkan seleksi.
+  function onKeydown(e) {
+    const tag = document.activeElement?.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      selNames = new Set(lastItems.map(x => x.name));
+      selAnchor = lastItems.length ? lastItems[lastItems.length - 1].name : null;
+      paintSel(); renderList(lastItems);
+    } else if (e.key === 'Escape' && selNames.size) {
+      clearSel();
+    }
+  }
+  document.addEventListener('keydown', onKeydown);
+  timers.push({ close: () => document.removeEventListener('keydown', onKeydown) });
+
   resetTree();
   liveBadge(15);
   every(load, 15000);

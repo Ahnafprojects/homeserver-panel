@@ -183,7 +183,11 @@ const PAGES = [
 
 let page = 'overview';
 let timers = [];
-const clearTimers = () => { timers.forEach(t => clearInterval(t) || clearTimeout(t)); timers = []; };
+// Beberapa view push objek { close() } (buat lepas WebSocket/ResizeObserver/
+// event listener), bukan cuma ID dari setInterval/setTimeout — tanpa cabang
+// ini, clearInterval/clearTimeout diam-diam no-op pada objek biasa dan
+// cleanup-nya tidak pernah kepanggil (numpuk tiap pindah-pindah halaman).
+const clearTimers = () => { timers.forEach(t => t && typeof t === 'object' ? t.close?.() : (clearInterval(t), clearTimeout(t))); timers = []; };
 const every = (fn, ms) => { fn(); timers.push(setInterval(fn, ms)); };
 
 let MY_PERMS = { all: true, pages: [] };

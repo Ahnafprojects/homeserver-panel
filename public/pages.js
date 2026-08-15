@@ -385,6 +385,21 @@ VIEWS.terminal = () => {
   const sel = el('select', { style: 'max-width:260px' },
     el('option', { value: '' }, 'Shell host (mesin server)'));
 
+  // Layar HP jauh lebih pendek dari laptop — kotak tempel/salin di bawah
+  // bisa habiskan separuh layar. Sembunyikan di belakang tombol toggle
+  // secara default di layar sempit supaya terminal dapat ruang paling besar,
+  // tapi tetap kebuka di desktop seperti biasa.
+  const isNarrow = () => innerWidth < 820;
+  let ioOpen = !isNarrow();
+  // Font tetap 12.5px berapa pun besar layarnya bikin terlihat "kecil" di
+  // laptop lebar (banyak ruang kosong terbuang) dan kepadatan/kolom
+  // berantakan di HP. Skalakan ke lebar layar, dan sesuaikan lagi tiap
+  // resize/putar HP (lewat handleResize di bawah).
+  const fontSizeFor = () => innerWidth < 560 ? 12.5 : innerWidth < 820 ? 13.5 : 15.5;
+  let curFontSize = fontSizeFor();
+  const btnIO = el('button', { class: 'tg', title: 'Tampilkan/sembunyikan kotak tempel & salin teks' },
+    'Tempel/Salin');
+
   // Form copy/paste manual — Clipboard API browser butuh HTTPS + izin dan
   // sering gagal diam-diam (terutama akses LAN via http://). Textarea biasa
   // selalu bisa di-paste/copy pakai klik-kanan atau Ctrl+C/V bawaan OS,
@@ -403,6 +418,19 @@ VIEWS.terminal = () => {
     copyBox.focus(); copyBox.select();
     try { document.execCommand('copy'); toast('Tersalin'); } catch {}
   };
+  const ioRow = el('div', { class: 'row', style: 'padding:8px 14px;border-bottom:1px solid var(--line);'
+    + 'background:var(--surface);gap:8px;flex-wrap:wrap' },
+    pasteBox, btnSend,
+    el('div', { style: 'width:1px;align-self:stretch;background:var(--line)' }),
+    copyBox, btnCopy);
+  function paintIO() {
+    ioRow.style.display = ioOpen ? '' : 'none';
+    btnIO.classList.toggle('on', ioOpen);
+    // Ukuran host berubah begitu baris ini disembunyikan/dimunculkan —
+    // xterm perlu di-fit ulang biar tidak nyisa area kosong/terpotong.
+    setTimeout(() => { try { activeSession()?.fit.fit(); } catch {} }, 30);
+  }
+  btnIO.onclick = () => { ioOpen = !ioOpen; paintIO(); };
 
   const host = el('div', { style: 'flex:1;min-height:0;position:relative;background:#0b0c0f' });
 
@@ -426,14 +454,11 @@ VIEWS.terminal = () => {
     tabBar,
     el('div', { class: 'row', style: 'padding:10px 14px;border-bottom:1px solid var(--line);'
       + 'background:var(--surface)' },
-      el('div', { style: 'max-width:280px;flex:1' }, sel)),
+      el('div', { style: 'max-width:280px;flex:1' }, sel), el('span', { class: 'sp' }), btnIO),
     keyBar,
-    el('div', { class: 'row', style: 'padding:8px 14px;border-bottom:1px solid var(--line);'
-      + 'background:var(--surface);gap:8px;flex-wrap:wrap' },
-      pasteBox, btnSend,
-      el('div', { style: 'width:1px;align-self:stretch;background:var(--line)' }),
-      copyBox, btnCopy),
+    ioRow,
     host), { full: true });
+  paintIO();
 
   function renderTabs() {
     const tabs = sessions.map((s, i) => {
@@ -478,7 +503,7 @@ VIEWS.terminal = () => {
     const id = ++seq;
     const box = el('div', { style: 'position:absolute;inset:0;padding:6px;display:none' });
     host.append(box);
-    const term = new Terminal({ fontSize: 12.5, fontFamily: 'ui-monospace,Menlo,monospace',
+    const term = new Terminal({ fontSize: curFontSize, fontFamily: 'ui-monospace,Menlo,monospace',
       cursorBlink: true, scrollback: 4000,
       theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
     const fit = new FitAddon.FitAddon();
@@ -516,6 +541,19 @@ VIEWS.terminal = () => {
       else { activeId = null; renderTabs(); }
     } else renderTabs();
   }
+
+  // Ganti ukuran font tiap kali layar melewati salah satu breakpoint di
+  // fontSizeFor (mis. HP diputar landscape, atau jendela browser laptop
+  // di-resize) — bukan tiap event resize, biar tidak fit() berkali-kali
+  // sia-sia saat ukurannya belum lintas ambang batas.
+  function handleResize() {
+    const fs = fontSizeFor();
+    if (fs === curFontSize) return;
+    curFontSize = fs;
+    sessions.forEach(s => { s.term.options.fontSize = fs; try { s.fit.fit(); } catch {} });
+  }
+  addEventListener('resize', handleResize);
+  timers.push({ close: () => removeEventListener('resize', handleResize) });
 
   // TIDAK mencegat Ctrl+V — biarkan xterm.js pakai event 'paste' native
   // browser (klik kanan / Ctrl+V ke textarea tersembunyinya). Itu tidak

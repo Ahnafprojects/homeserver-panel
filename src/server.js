@@ -351,8 +351,13 @@ const isTexty = (f) => TEXTY.test(f) ||
 const MIME = { '.html':'text/html','.css':'text/css','.js':'text/javascript',
   '.json':'application/json','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg',
   '.gif':'image/gif','.svg':'image/svg+xml','.webp':'image/webp','.ico':'image/x-icon',
+  '.bmp':'image/bmp','.avif':'image/avif','.heic':'image/heic','.heif':'image/heif',
   '.txt':'text/plain','.md':'text/plain','.log':'text/plain','.yml':'text/plain',
-  '.yaml':'text/plain','.pdf':'application/pdf','.mp4':'video/mp4' };
+  '.yaml':'text/plain','.pdf':'application/pdf',
+  '.mp4':'video/mp4','.m4v':'video/mp4','.webm':'video/webm','.ogv':'video/ogg',
+  '.mov':'video/quicktime','.mkv':'video/x-matroska',
+  '.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4',
+  '.flac':'audio/flac','.aac':'audio/aac' };
 const mimeOf = (f) => MIME[path.extname(f).toLowerCase()] || 'application/octet-stream';
 
 // ── Basis data ──────────────────────────────────────────────────────────────
@@ -1915,7 +1920,22 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/files/raw') {
         const f = safePath(q.get('path'), q.get('root'));
         const st = await fs.stat(f);
-        res.writeHead(200, { 'Content-Type': mimeOf(f), 'Content-Length': st.size });
+        // Range wajib buat pemutar <video>/<audio> — tanpa ini browser cuma
+        // bisa mulai dari awal berkas dan tidak bisa loncat (seek).
+        const range = req.headers.range;
+        const m = range && /^bytes=(\d*)-(\d*)$/.exec(range);
+        if (m) {
+          const start = m[1] ? +m[1] : 0;
+          const end = m[2] ? +m[2] : st.size - 1;
+          if (isNaN(start) || isNaN(end) || start > end || end >= st.size) {
+            res.writeHead(416, { 'Content-Range': `bytes */${st.size}` });
+            return res.end();
+          }
+          res.writeHead(206, { 'Content-Type': mimeOf(f), 'Content-Length': end - start + 1,
+            'Content-Range': `bytes ${start}-${end}/${st.size}`, 'Accept-Ranges': 'bytes' });
+          return fsSync.createReadStream(f, { start, end }).pipe(res);
+        }
+        res.writeHead(200, { 'Content-Type': mimeOf(f), 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
         return fsSync.createReadStream(f).pipe(res);
       }
       if (p === '/api/files/upload' && req.method === 'POST') {

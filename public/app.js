@@ -761,21 +761,63 @@ VIEWS.files = () => {
   const folderInput = el('input', { type: 'file', multiple: '',
     webkitdirectory: '', directory: '', style: 'display:none' });
   document.body.append(fileInput, folderInput);
-  fileInput.onchange = async () => {
-    for (const f of fileInput.files) await uploadInto(cwd, f);
-    fileInput.value = ''; refreshTree(); load();
-  };
-  folderInput.onchange = async () => {
-    for (const f of folderInput.files) await uploadInto(cwd, f, f.webkitRelativePath || f.name);
-    folderInput.value = ''; refreshTree(); load();
-  };
+
+  // Panel progres unggah — tanpa ini layar cuma diam total selama upload
+  // (fetch() polos tidak kasih progress apa pun), jadi upload file besar atau
+  // folder isi banyak kelihatan kayak macet/hang padahal jalan.
+  const upx = el('div', { class: 'upx', style: 'display:none' });
+  document.body.append(upx);
+  let upxN = { done: 0, total: 0 };
+  function upxPaint(name, frac) {
+    upx.replaceChildren(
+      el('div', { class: 'upx-row' },
+        el('span', {}, `Mengunggah ${Math.min(upxN.done + 1, upxN.total)}/${upxN.total}`),
+        el('span', {}, Math.round(frac * 100) + '%')),
+      el('div', { class: 'upx-name' }, name),
+      el('div', { class: 'upx-bar' }, el('i', { style: `width:${Math.round(frac * 100)}%` })));
+  }
+  function upxStart(total) {
+    upxN = { done: 0, total }; upx.style.display = ''; upxPaint('Menyiapkan…', 0);
+  }
+  function upxStop() {
+    upx.replaceChildren(el('div', { class: 'upx-row' }, el('span', {}, `Selesai · ${upxN.total} berkas`)));
+    setTimeout(() => { upx.style.display = 'none'; }, 1200);
+  }
+
+  // XHR, bukan fetch() — cuma XHR yang punya event progress upload
+  // (xhr.upload.onprogress), yang dipakai buat isi panel di atas.
+  function uploadXHR(url, file, onProgress) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
+        ? resolve() : reject(new Error('Upload gagal (' + xhr.status + ')'));
+      xhr.onerror = () => reject(new Error('Upload gagal — koneksi terputus'));
+      xhr.send(file);
+    });
+  }
   async function uploadInto(destPath, f, relName = f.name) {
     try {
-      await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(relName)}`,
-        { method: 'POST', body: f });
-      toast(`${relName} diunggah`);
+      await uploadXHR(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(relName)}`,
+        f, (frac) => upxPaint(relName, frac));
     } catch { toast('Gagal mengunggah ' + relName); }
+    upxN.done++;
   }
+  async function uploadAll(destPath, files) {
+    upxStart(files.length);
+    for (const [f, rel] of files) await uploadInto(destPath, f, rel);
+    upxStop(); refreshTree(); load();
+  }
+
+  fileInput.onchange = async () => {
+    await uploadAll(cwd, [...fileInput.files].map((f) => [f, f.name]));
+    fileInput.value = '';
+  };
+  folderInput.onchange = async () => {
+    await uploadAll(cwd, [...folderInput.files].map((f) => [f, f.webkitRelativePath || f.name]));
+    folderInput.value = '';
+  };
 
   addAction('Unggah', 'up', () => fileInput.click(), 'btn pri');
   addAction('Unggah folder', 'up', () => folderInput.click());
@@ -801,14 +843,45 @@ VIEWS.files = () => {
     });
   }
 
+  // Sebelumnya file apa pun yang bukan gambar dikenal (png/jpg/gif/webp/svg)
+  // langsung dibaca sebagai teks UTF-8, berapa pun formatnya — jadi file
+  // biner (video .mov, foto HEIC iPhone, dst) muncul sebagai teks acak-acakan
+  // (isi header binernya, bukan errornya) di kotak edit. Sekarang dipilah:
+  // gambar yang didukung browser → <img>, video/audio → pemutar bawaan
+  // browser, format yang browser TIDAK bisa dekode sama sekali (HEIC dst —
+  // Firefox/Chrome di Linux tidak punya decoder-nya, beda dari iPhone/Safari)
+  // → tawarkan unduh saja daripada nampilin sampah biner.
+  const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
+  const VIDEO_EXT = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i;
+  const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
+  const NO_PREVIEW_EXT = /\.(heic|heif|psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
   async function open(it) {
     const full = (cwd ? cwd + '/' : '') + it.name;
     if (it.dir) { cwd = full; return load(); }
-    if (/\.(png|jpe?g|gif|webp|svg)$/i.test(it.name)) {
-      return openDrawer(it.name, el('img', { src: `/api/files/raw?${q()}&path=${encodeURIComponent(full)}`,
-        style: 'max-width:100%;border-radius:8px' }));
+    const rawUrl = `/api/files/raw?${q()}&path=${encodeURIComponent(full)}`;
+    const dlUrl = `/api/files/download?${q()}&path=${encodeURIComponent(full)}`;
+    if (IMG_EXT.test(it.name)) {
+      return openDrawer(it.name, el('img', { src: rawUrl, style: 'max-width:100%;border-radius:8px' }));
     }
-    if (it.size > 2 * 1024 * 1024) { toast('File is too large to open'); return; }
+    if (VIDEO_EXT.test(it.name)) {
+      return openDrawer(it.name, el('video', { src: rawUrl, controls: '', autoplay: 'false',
+        style: 'max-width:100%;max-height:70vh;border-radius:8px;display:block' }));
+    }
+    if (AUDIO_EXT.test(it.name)) {
+      return openDrawer(it.name, el('audio', { src: rawUrl, controls: '', style: 'width:100%' }));
+    }
+    if (NO_PREVIEW_EXT.test(it.name)) {
+      return openDrawer(it.name, el('div', { class: 'empty' },
+        'Browser ini tidak bisa menampilkan pratinjau untuk format ini.',
+        el('div', { style: 'margin-top:12px' },
+          el('a', { class: 'btn pri', href: dlUrl, download: it.name }, 'Unduh berkas'))));
+    }
+    if (it.size > 4 * 1024 * 1024) {
+      return openDrawer(it.name, el('div', { class: 'empty' },
+        'Berkas lebih dari 4 MB — kebesaran untuk dibuka sebagai teks.',
+        el('div', { style: 'margin-top:12px' },
+          el('a', { class: 'btn pri', href: dlUrl, download: it.name }, 'Unduh berkas'))));
+    }
     try {
       const { content } = await api(`/files/read?${q()}&path=${encodeURIComponent(full)}`);
       const ta = el('textarea', { style: 'height:64vh' }); ta.value = content;
@@ -869,15 +942,12 @@ VIEWS.files = () => {
     const items = e.dataTransfer.items;
     const entries = items?.length ? [...items].map((it) => it.webkitGetAsEntry?.()).filter(Boolean) : [];
     if (entries.length) {
-      for (const en of entries) {
-        for (const [f, rel] of await readEntryFiles(en)) await uploadInto(destPath, f, rel);
-      }
-      refreshTree(); load();
-      return;
+      const files = [];
+      for (const en of entries) files.push(...await readEntryFiles(en));
+      return uploadAll(destPath, files);
     }
     if (e.dataTransfer.files?.length) {
-      for (const f of e.dataTransfer.files) await uploadInto(destPath, f);
-      refreshTree(); load();
+      return uploadAll(destPath, [...e.dataTransfer.files].map((f) => [f, f.name]));
     }
   }
 

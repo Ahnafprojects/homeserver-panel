@@ -36,7 +36,7 @@ say()  { printf '\n\033[1;32m==> %s\033[0m\n' "$1"; }
 warn() { printf '\033[1;33m[!] %s\033[0m\n' "$1"; }
 
 # ---------------------------------------------------------------------------
-say "1/5  Cari drive berlabel '$LABEL'"
+say "1/6  Cari drive berlabel '$LABEL'"
 # ---------------------------------------------------------------------------
 DEV=$(blkid -L "$LABEL" 2>/dev/null || true)
 if [[ -z "$DEV" ]]; then
@@ -69,7 +69,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "2/5  Mount otomatis di $MOUNT"
+say "2/6  Mount otomatis di $MOUNT"
 # ---------------------------------------------------------------------------
 mkdir -p "$MOUNT"
 UUID=$(blkid -o value -s UUID "$DEV")
@@ -125,7 +125,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-say "3/5  Script backup"
+say "3/6  Script backup"
 # ---------------------------------------------------------------------------
 cat > /usr/local/bin/server-backup <<'SCRIPT_EOF'
 #!/usr/bin/env bash
@@ -362,7 +362,7 @@ chmod 755 /usr/local/bin/server-restore
 echo "    /usr/local/bin/server-restore dibuat (panduan restore)"
 
 # ---------------------------------------------------------------------------
-say "4/5  Jadwal otomatis"
+say "4/6  Jadwal otomatis"
 # ---------------------------------------------------------------------------
 cat > /etc/systemd/system/server-backup.service <<'SCRIPT_EOF'
 [Unit]
@@ -406,7 +406,81 @@ udevadm control --reload-rules 2>/dev/null || true
 echo "    backup juga jalan otomatis tiap drive dicolok"
 
 # ---------------------------------------------------------------------------
-say "5/5  Backup pertama sekarang"
+say "5/6  Backup darurat kalau baterai lowbat"
+# ---------------------------------------------------------------------------
+BAT=$(find /sys/class/power_supply -maxdepth 1 -name 'BAT*' 2>/dev/null | head -1)
+if [[ -z "$BAT" ]]; then
+    echo "    tidak ada baterai terdeteksi (mesin ini dicolok listrik terus) — dilewati"
+else
+    cat > /usr/local/bin/battery-backup-check <<'SCRIPT_EOF'
+#!/usr/bin/env bash
+#
+# battery-backup-check — laptop ini jalan sebagai server 24/7, jadi kalau
+# listrik mati dan cuma mengandalkan baterai, backup harian jam 02:00 saja
+# tidak cukup — baterainya bisa habis duluan sebelum jadwal itu tiba.
+# Dicek tiap 2 menit lewat timer; begitu baterai <= ambang batas DAN lagi
+# tidak dicas (bukan cuma dicabut charger-nya doang), langsung backup
+# sekarang juga sebelum laptop mati kehabisan daya.
+set -uo pipefail
+
+THRESHOLD=20
+MARKER=/var/run/battery-backup-triggered
+NOTIFY=/usr/local/bin/notify
+
+BAT=$(find /sys/class/power_supply -maxdepth 1 -name 'BAT*' 2>/dev/null | head -1)
+[[ -n "$BAT" && -r "$BAT/capacity" && -r "$BAT/status" ]] || exit 0
+
+CAP=$(cat "$BAT/capacity" 2>/dev/null || echo 100)
+STATUS=$(cat "$BAT/status" 2>/dev/null || echo Unknown)
+
+if [[ "$STATUS" == "Discharging" && "$CAP" -le "$THRESHOLD" ]]; then
+    # MARKER mencegah backup diulang-ulang tiap 2 menit selama baterai
+    # masih di bawah ambang batas — cukup sekali per episode lowbat.
+    if [[ ! -e "$MARKER" ]]; then
+        touch "$MARKER"
+        [[ -x "$NOTIFY" ]] && "$NOTIFY" "🔋 Baterai ${CAP}% — backup darurat" \
+"Listrik kemungkinan mati dan baterai tinggal <b>${CAP}%</b>.
+Menjalankan backup sekarang juga sebelum server mati kehabisan daya." || true
+        /usr/local/bin/server-backup
+    fi
+else
+    # Baterai naik lagi di atas ambang batas (dicas / listrik nyala lagi) —
+    # reset penanda, supaya bisa kepicu lagi di episode lowbat berikutnya.
+    rm -f "$MARKER"
+fi
+SCRIPT_EOF
+    chmod 755 /usr/local/bin/battery-backup-check
+
+    cat > /etc/systemd/system/battery-backup-check.service <<'SCRIPT_EOF'
+[Unit]
+Description=Cek baterai — backup darurat kalau lowbat & tidak dicas
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/battery-backup-check
+Nice=15
+IOSchedulingClass=idle
+SCRIPT_EOF
+
+    cat > /etc/systemd/system/battery-backup-check.timer <<'SCRIPT_EOF'
+[Unit]
+Description=Cek baterai tiap 2 menit
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
+SCRIPT_EOF
+
+    systemctl daemon-reload
+    systemctl enable --now battery-backup-check.timer >/dev/null
+    echo "    baterai <=20% & tidak dicas -> backup darurat langsung (dicek tiap 2 menit)"
+fi
+
+# ---------------------------------------------------------------------------
+say "6/6  Backup pertama sekarang"
 # ---------------------------------------------------------------------------
 echo "    menjalankan..."
 if /usr/local/bin/server-backup; then
@@ -421,9 +495,14 @@ say "SELESAI"
 cat <<EOF
 
   Drive     : $DEV -> $MOUNT
-  Jadwal    : tiap hari 02:00, plus setiap drive dicolok
+  Jadwal    : tiap hari 02:00, plus setiap drive dicolok, plus darurat
+              begitu baterai <=20% dan tidak lagi dicas
   Simpan    : 7 snapshot terakhir (yang tertua dihapus otomatis)
   Notifikasi: hasil backup dikirim ke Telegram
+
+  PENTING — ini BUKAN backup seluruh isi laptop. Cuma folder di bawah ini
+  yang ke-backup; sisanya (sistem operasi, aplikasi yang di-install,
+  Home folder di luar /srv, volume Docker mentah, dst) TIDAK ikut.
 
   Struktur folder di drive (baca $MOUNT/README.txt buat detail lengkap):
     auto/<tanggal_jam>/files/       data pribadi (/srv/data) + stacks docker

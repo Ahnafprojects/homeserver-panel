@@ -4,11 +4,14 @@
 
 /* ═══════════ Stack: compose editor + git ═══════════ */
 VIEWS.stacks = () => {
+  let all = [], q = '';
   const wrap = el('div');
-  mount(wrap);
+  const search = searchBox('Cari stack…', v => { q = v; render(); });
+  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
 
+  addAction('Deploy website', 'rocket', () => formAuto(), 'btn pri');
   addAction('From Git', 'down', () => formGit(), 'btn');
-  addAction('New stack', 'plus', () => formCompose(), 'btn pri');
+  addAction('New stack', 'plus', () => formCompose());
   addAction('Refresh', 'refresh', () => load());
 
   function logDrawer(title) {
@@ -73,10 +76,27 @@ VIEWS.stacks = () => {
     const name = el('input', { placeholder: 'nama-stack' });
     const repo = el('input', { placeholder: 'https://github.com/pengguna/repo.git' });
     const branch = el('input', { placeholder: 'main (opsional)' });
+    const isPrivate = el('input', { type: 'checkbox', style: 'width:auto;height:auto' });
+    const token = el('input', { type: 'password', placeholder: 'ghp_xxxxxxxxxxxx (personal access token)' });
+    const tokenField = el('div', { class: 'field', style: 'display:none' },
+      el('label', {}, 'Token akses'), token,
+      el('div', { style: 'font-size:11px;color:var(--tx-3)' },
+        'GitHub: Settings → Developer settings → Personal access tokens (scope "repo"). '
+        + 'GitLab: User Settings → Access Tokens (scope "read_repository"). '
+        + 'Token tidak disimpan — cuma dipakai sekali saat clone, ditempel ke URL repo secara otomatis.'),
+      el('div', { style: 'font-size:11px;color:var(--tx-3);margin-top:4px' },
+        'Kalau URL repo pakai ssh:// atau git@ (bukan https://), token ini tidak berlaku — '
+        + 'server harus punya SSH key yang sudah didaftarkan ke akun Git kamu.'));
+    isPrivate.onchange = () => { tokenField.style.display = isPrivate.checked ? '' : 'none'; };
+
     const go = el('button', { class: 'btn pri', html: ic('down', 13) + '<span>Clone</span>' });
     go.onclick = () => {
-      const n = (name.value || '').trim(), r = (repo.value || '').trim();
+      const n = (name.value || '').trim();
+      let r = (repo.value || '').trim();
       if (!n || !r) return toast('Name and URL are required');
+      if (isPrivate.checked && token.value.trim() && /^https:\/\//i.test(r)) {
+        r = r.replace(/^https:\/\//i, `https://${encodeURIComponent(token.value.trim())}@`);
+      }
       stream(`/api/stacks/${encodeURIComponent(n)}/clone?repo=${encodeURIComponent(r)}`
         + `&branch=${encodeURIComponent(branch.value || '')}`, 'Clone — ' + n);
     };
@@ -84,9 +104,91 @@ VIEWS.stacks = () => {
       el('div', { class: 'field' }, el('label', {}, 'Nama stack'), name),
       el('div', { class: 'field' }, el('label', {}, 'URL repositori'), repo),
       el('div', { class: 'field' }, el('label', {}, 'Branch'), branch),
-      el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
-        'Repo privat: pakai URL bertoken, contoh https://TOKEN@github.com/user/repo.git'),
+      el('label', { class: 'row', style: 'cursor:pointer;font-weight:400;margin-bottom:10px' },
+        isPrivate, 'Ini repo privat'),
+      tokenField,
       el('div', { class: 'row' }, go)));
+  }
+
+  // Deploy otomatis: clone, deteksi jenis project-nya, lalu bikinkan
+  // Dockerfile + docker-compose.yml sendiri — pengguna tidak perlu menulis
+  // YAML apa pun buat kasus paling umum (satu repo, satu website).
+  function formAuto() {
+    const name = el('input', { placeholder: 'nama-stack' });
+    const repo = el('input', { placeholder: 'https://github.com/pengguna/repo.git' });
+    const branch = el('input', { placeholder: 'main (opsional)' });
+    const isPrivate = el('input', { type: 'checkbox', style: 'width:auto;height:auto' });
+    const token = el('input', { type: 'password', placeholder: 'ghp_xxxxxxxxxxxx (personal access token)' });
+    const tokenField = el('div', { class: 'field', style: 'display:none' },
+      el('label', {}, 'Token akses'), token);
+    isPrivate.onchange = () => { tokenField.style.display = isPrivate.checked ? '' : 'none'; };
+
+    const go = el('button', { class: 'btn pri', html: ic('rocket', 13) + '<span>Clone & deteksi</span>' });
+    const msg = el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:8px;min-height:16px' });
+    go.onclick = () => {
+      const n = (name.value || '').trim();
+      let r = (repo.value || '').trim();
+      if (!n || !r) return toast('Nama dan URL wajib diisi');
+      if (isPrivate.checked && token.value.trim() && /^https:\/\//i.test(r)) {
+        r = r.replace(/^https:\/\//i, `https://${encodeURIComponent(token.value.trim())}@`);
+      }
+      go.disabled = true; msg.textContent = 'Cloning…'; msg.style.color = 'var(--tx-3)';
+      const es = new EventSource(`/api/stacks/${encodeURIComponent(n)}/clone?repo=${encodeURIComponent(r)}`
+        + `&branch=${encodeURIComponent(branch.value || '')}`);
+      es.addEventListener('done', async (e) => {
+        es.close();
+        if (+e.data !== 0) { msg.style.color = 'var(--bad)'; msg.textContent = 'Clone gagal (kode ' + e.data + ')';
+          go.disabled = false; return; }
+        msg.textContent = 'Mendeteksi jenis project…';
+        try {
+          const det = await api(`/stacks/${encodeURIComponent(n)}/detect`);
+          closeDrawer(); showAutoConfirm(n, det);
+        } catch (err) { msg.style.color = 'var(--bad)'; msg.textContent = err.message; go.disabled = false; }
+      });
+      es.onerror = () => { es.close(); msg.style.color = 'var(--bad)'; msg.textContent = 'Clone gagal'; go.disabled = false; };
+    };
+    openDrawer('Deploy website (otomatis)', el('div', {},
+      el('div', { class: 'field' }, el('label', {}, 'Nama stack'), name),
+      el('div', { class: 'field' }, el('label', {}, 'URL repositori'), repo),
+      el('div', { class: 'field' }, el('label', {}, 'Branch'), branch),
+      el('label', { class: 'row', style: 'cursor:pointer;font-weight:400;margin-bottom:10px' },
+        isPrivate, 'Ini repo privat'),
+      tokenField,
+      el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
+        'Panel akan clone repo-nya, lalu mendeteksi otomatis jenis project-nya (Next.js, Vite, '
+        + 'Create React App, Node, atau situs statis) dan bikinkan Dockerfile + docker-compose.yml '
+        + 'sendiri — kamu tinggal konfirmasi port (dan environment variable kalau perlu) di langkah berikutnya.'),
+      el('div', { class: 'row' }, go), msg));
+  }
+
+  function showAutoConfirm(name, det) {
+    const port = el('input', { value: det.suggestedPort, inputmode: 'numeric' });
+    const envBox = el('textarea', { rows: 4, spellcheck: 'false',
+      placeholder: 'DATABASE_URL=postgres://user:pass@host:5432/db\nNEXT_PUBLIC_API_URL=https://...' });
+    const isBuildTime = det.type === 'next-static' || det.type === 'static-build';
+    const deployBtn = el('button', { class: 'btn pri', html: ic('play', 13) + '<span>Deploy sekarang</span>' });
+    deployBtn.onclick = () => {
+      const p = +port.value;
+      if (!Number.isInteger(p) || p < 1 || p > 65535) return toast('Port tidak valid');
+      const envVars = {};
+      envBox.value.split('\n').forEach(line => {
+        const i = line.indexOf('=');
+        if (i > 0) envVars[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+      });
+      closeDrawer();
+      stream(`/api/stacks/${encodeURIComponent(name)}/autodeploy?port=${p}`
+        + `&env=${encodeURIComponent(JSON.stringify(envVars))}`, 'Deploy otomatis — ' + name);
+    };
+    openDrawer('Terdeteksi: ' + det.label, el('div', {},
+      el('div', { class: 'pill ok', style: 'margin-bottom:14px' }, det.label),
+      el('div', { class: 'field' }, el('label', {}, 'Port di laptop (host)'), port),
+      el('div', { class: 'field' }, el('label', {}, 'Environment variable (opsional — satu per baris, KEY=nilai)'), envBox),
+      el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
+        isBuildTime
+          ? 'Environment variable ini dipakai SAAT BUILD (mis. koneksi database buat generate halaman statis) — '
+            + 'tidak tersimpan di dalam image jadinya, cuma dipakai sesaat pas build.'
+          : 'Environment variable ini dipakai SAAT APLIKASI JALAN (bisa diubah lagi lewat Edit stack nanti).'),
+      el('div', { class: 'row' }, deployBtn)));
   }
 
   async function detail(s) {
@@ -108,6 +210,85 @@ VIEWS.stacks = () => {
           closeDrawer(); toast('Stack dihapus'); load();
         }, 'btn danger'));
       body.append(acts);
+
+      // ── Subdomain lewat Cloudflare Tunnel ──
+      try {
+        const [tData, cData] = await Promise.all([api('/tunnel/sites'), api('/containers')]);
+        const stackContainers = cData.containers.filter(c => c.compose === s.name);
+        const mySites = tData.sites.filter(x => stackContainers.some(c => c.name === x.target));
+
+        const listArea = el('div');
+        function paintList() {
+          listArea.replaceChildren(mySites.length
+            ? el('div', { class: 'card' }, el('table', {}, el('tbody', {},
+                ...mySites.map(site => {
+                  const open = el('a', { class: 'ib', title: 'Buka', html: ic('search', 14),
+                    href: 'https://' + site.hostname, target: '_blank' });
+                  const del = el('button', { class: 'ib', html: ic('trash', 14) });
+                  del.onclick = async () => {
+                    if (!confirm(`Hapus subdomain ${site.hostname}?`)) return;
+                    try { await api('/tunnel/sites/' + site.id, { method: 'DELETE' });
+                      mySites.splice(mySites.indexOf(site), 1); paintList();
+                      toast('Subdomain dihapus'); } catch (e) { toast(e.message); }
+                  };
+                  return el('tr', {}, el('td', { class: 'mono' }, site.hostname),
+                    el('td', { class: 'mono', style: 'color:var(--tx-3)' }, `${site.target}:${site.port}`),
+                    el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, open, del)));
+                }))))
+            : el('div', { class: 'card' }, el('div', { class: 'empty', style: 'padding:14px' },
+                'Belum ada subdomain untuk stack ini.')));
+        }
+        paintList();
+
+        const portOptions = stackContainers.flatMap(c => (c.ports || []).map(p2 => {
+          const [hostPort] = p2.split(':');
+          return { value: `${c.name}|${hostPort}`, label: `${c.name} (port ${hostPort})` };
+        }));
+
+        // Nama stack ditempel di depan label (toko-backend.domain), bukan
+        // langsung "backend.domain" — biar tiap project punya "namespace"
+        // sendiri, tanpa semua service numpang rata di satu tingkat
+        // subdomain. Dipisah pakai STRIP, bukan titik — subdomain 2 tingkat
+        // (backend.toko.domain) butuh sertifikat wildcard tambahan yang
+        // tidak dicakup paket gratis Cloudflare, jadi TLS-nya gagal total.
+        const deriveLabel = (cName) => {
+          let l = cName === s.name ? 'app'
+            : cName.startsWith(s.name + '-') ? cName.slice(s.name.length + 1) : cName;
+          l = l.replace(/[^a-z0-9-]+/g, '-').toLowerCase().replace(/^-+|-+$/g, '');
+          return l || 'app';
+        };
+        let addForm = '';
+        if (portOptions.length) {
+          const prefix = el('span', { style: 'color:var(--tx-3);white-space:nowrap' }, s.name + '-');
+          const labelInp = el('input', { value: deriveLabel(portOptions[0].value.split('|')[0]),
+            placeholder: 'backend', style: 'max-width:130px' });
+          const suffix = el('span', { style: 'color:var(--tx-3);white-space:nowrap' }, '.' + tData.baseDomain);
+          const portSel = el('select', {}, ...portOptions.map(o => el('option', { value: o.value }, o.label)));
+          portSel.onchange = () => { labelInp.value = deriveLabel(portSel.value.split('|')[0]); };
+          const addBtn = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Buat subdomain</span>' });
+          addBtn.onclick = async () => {
+            const [target, port] = portSel.value.split('|');
+            addBtn.disabled = true;
+            try {
+              const r = await api('/tunnel/sites', { method: 'POST', body: JSON.stringify({
+                label: labelInp.value.trim(), target, port, project: s.name }) });
+              toast(r.warning || `${r.site.hostname} dibuat`);
+              mySites.push(r.site); paintList();
+              // Otomatis isi juga "Domain publik" di detail container itu, biar konsisten.
+              if (r.dns?.ok) await api(`/containers/${encodeURIComponent(target)}/link`,
+                { method: 'POST', body: JSON.stringify({ url: `https://${r.site.hostname}` }) }).catch(() => {});
+            } catch (e) { toast(e.message); } finally { addBtn.disabled = false; }
+          };
+          addForm = el('div', { class: 'card', style: 'padding:12px' },
+            el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;align-items:center' },
+              prefix, labelInp, suffix, portSel, addBtn));
+        } else {
+          addForm = el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:6px' },
+            'Deploy stack ini dulu (dengan port dipublikasikan) sebelum bisa dibikinkan subdomain.');
+        }
+
+        body.append(el('div', { class: 'sec' }, 'Subdomain (Cloudflare Tunnel)'), listArea, addForm);
+      } catch { /* kalau gagal ambil data tunnel, cukup lewati bagian ini */ }
 
       if (s.source === 'git') {
         const g = await api(`/stacks/${s.name}/git`).catch(() => null);
@@ -149,12 +330,22 @@ VIEWS.stacks = () => {
   }
 
   async function load() {
+    try { all = (await api('/stacks')).stacks; render(); }
+    catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
+  function render() {
     try {
-      const { stacks: list } = await api('/stacks');
-      if (!list.length) {
+      if (!all.length) {
         wrap.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'empty',
           html: ic('box', 30, 1.3) + '<div>No stacks yet</div>' +
             '<div style="font-size:11.5px;margin-top:6px">Buat dari compose, atau clone dari Git.</div>' })));
+        return;
+      }
+      const list = all.filter(s => matches(q, s.name, s.repo, s.branch));
+      if (!list.length) {
+        wrap.replaceChildren(el('div', { class: 'card' },
+          el('div', { class: 'empty', html: ic('search', 30, 1.3) + '<div>No matching stacks</div>' })));
         return;
       }
       const tb = el('tbody');
@@ -182,7 +373,15 @@ VIEWS.stacks = () => {
 
 /* ═══════════ Terminal ═══════════ */
 VIEWS.terminal = () => {
-  const host = el('div', { style: 'flex:1;min-height:0;background:#0b0c0f;padding:6px' });
+  let sessions = [], activeId = null, seq = 0;
+  const activeSession = () => sessions.find(s => s.id === activeId) || null;
+
+  const tabBar = el('div', { style: 'height:30px;flex:0 0 30px;display:flex;align-items:center;'
+    + 'gap:2px;padding:0 6px;background:var(--surface);border-bottom:1px solid var(--line);'
+    + 'overflow-x:auto' });
+  const addBtn = el('button', { class: 'ib', title: 'Terminal baru', html: ic('plus', 13) });
+  addBtn.onclick = () => addSession();
+
   const sel = el('select', { style: 'max-width:260px' },
     el('option', { value: '' }, 'Shell host (mesin server)'));
 
@@ -197,17 +396,38 @@ VIEWS.terminal = () => {
     style: 'flex:1;resize:vertical;font-family:var(--mono);font-size:11.5px;padding:6px 8px;min-width:160px' });
   const btnCopy = el('button', { class: 'btn' }, 'Salin');
   btnSend.onclick = () => {
-    if (pasteBox.value && ws?.readyState === 1) { ws.send(pasteBox.value); pasteBox.value = ''; }
+    const s = activeSession();
+    if (pasteBox.value && s?.ws?.readyState === 1) { s.ws.send(pasteBox.value); pasteBox.value = ''; }
   };
   btnCopy.onclick = () => {
     copyBox.focus(); copyBox.select();
     try { document.execCommand('copy'); toast('Tersalin'); } catch {}
   };
 
+  const host = el('div', { style: 'flex:1;min-height:0;position:relative;background:#0b0c0f' });
+
+  // Baris tombol tombol khusus — HP sering tidak kirim Enter/Tab/Esc dengan
+  // benar lewat keyboard virtualnya (event-nya beda dari keyboard fisik),
+  // jadi kirim langsung byte-nya ke terminal, tidak lewat event keyboard.
+  const keyBtn = (label, bytes, title) => {
+    const b = el('button', { class: 'btn', title: title || label,
+      style: 'height:30px;padding:0 10px;font-size:12px;flex:0 0 auto' }, label);
+    b.onclick = () => { const s = activeSession(); if (s?.ws?.readyState === 1) s.ws.send(bytes); };
+    return b;
+  };
+  const keyBar = el('div', { class: 'row', style: 'padding:6px 14px;border-bottom:1px solid var(--line);'
+    + 'background:var(--surface);gap:6px;overflow-x:auto;flex-wrap:nowrap' },
+    keyBtn('Esc', '\x1b'), keyBtn('Tab', '\t'), keyBtn('Ctrl+C', '\x03', 'Hentikan proses'),
+    keyBtn('↑', '\x1b[A', 'Riwayat sebelumnya'), keyBtn('↓', '\x1b[B'),
+    keyBtn('←', '\x1b[D'), keyBtn('→', '\x1b[C'),
+    keyBtn('Enter ↵', '\r', 'Kirim Enter — pakai ini kalau keyboard HP tidak mengirim Enter'));
+
   mount(el('div', { style: 'display:flex;flex-direction:column;height:100%' },
+    tabBar,
     el('div', { class: 'row', style: 'padding:10px 14px;border-bottom:1px solid var(--line);'
       + 'background:var(--surface)' },
       el('div', { style: 'max-width:280px;flex:1' }, sel)),
+    keyBar,
     el('div', { class: 'row', style: 'padding:8px 14px;border-bottom:1px solid var(--line);'
       + 'background:var(--surface);gap:8px;flex-wrap:wrap' },
       pasteBox, btnSend,
@@ -215,50 +435,109 @@ VIEWS.terminal = () => {
       copyBox, btnCopy),
     host), { full: true });
 
-  let term, fit, ws;
-  function connect() {
-    ws?.close();
-    host.replaceChildren();
-    term = new Terminal({ fontSize: 12.5, fontFamily: 'ui-monospace,Menlo,monospace',
+  function renderTabs() {
+    const tabs = sessions.map((s, i) => {
+      const on = s.id === activeId;
+      const tab = el('div', { style: 'display:flex;align-items:center;gap:6px;padding:0 6px 0 10px;'
+        + `height:24px;border-radius:4px;cursor:pointer;font-size:11.5px;white-space:nowrap;`
+        + `color:${on ? 'var(--tx)' : 'var(--tx-3)'};background:${on ? 'var(--sunken)' : 'transparent'}` },
+        `Terminal ${i + 1}`);
+      tab.onclick = () => selectTab(s.id);
+      const close = el('span', { title: 'Tutup', style: 'opacity:.65;padding:2px 4px;line-height:1;'
+        + 'border-radius:3px' }, '×');
+      close.onmouseenter = () => close.style.background = 'var(--line)';
+      close.onmouseleave = () => close.style.background = '';
+      close.onclick = (e) => { e.stopPropagation(); closeSession(s.id); };
+      tab.append(close);
+      return tab;
+    });
+    tabBar.replaceChildren(...tabs, addBtn);
+  }
+
+  function selectTab(id) {
+    activeId = id;
+    sessions.forEach(s => { s.box.style.display = s.id === id ? 'block' : 'none'; });
+    const s = activeSession();
+    sel.value = s?.target || '';
+    renderTabs();
+    if (s) setTimeout(() => { try { s.fit.fit(); s.term.focus(); } catch {} }, 30);
+  }
+
+  function connectSession(s) {
+    s.ws?.close();
+    s.term.reset();
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const c = s.target ? `?container=${encodeURIComponent(s.target)}` : '';
+    s.ws = new WebSocket(`${proto}://${location.host}/ws/term${c}`);
+    s.ws.binaryType = 'arraybuffer';
+    s.ws.onmessage = e => s.term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+    s.ws.onclose = () => s.term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
+  }
+
+  function addSession(target = '') {
+    const id = ++seq;
+    const box = el('div', { style: 'position:absolute;inset:0;padding:6px;display:none' });
+    host.append(box);
+    const term = new Terminal({ fontSize: 12.5, fontFamily: 'ui-monospace,Menlo,monospace',
       cursorBlink: true, scrollback: 4000,
       theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
-    fit = new FitAddon.FitAddon();
-    term.loadAddon(fit); term.open(host); fit.fit(); term.focus();
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const c = sel.value ? `?container=${encodeURIComponent(sel.value)}` : '';
-    ws = new WebSocket(`${proto}://${location.host}/ws/term${c}`);
-    ws.binaryType = 'arraybuffer';
-    ws.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
-    ws.onclose = () => term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
-    term.onData(d => ws.readyState === 1 && ws.send(d));
-    term.onResize(({ rows, cols }) => ws.readyState === 1 && ws.send(`\x00resize:${rows},${cols}`));
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit); term.open(box);
+    const s = { id, term, fit, ws: null, box, target };
+    term.onData(d => s.ws?.readyState === 1 && s.ws.send(d));
+    term.onResize(({ rows, cols }) => s.ws?.readyState === 1 && s.ws.send(`\x00resize:${rows},${cols}`));
     // Isi kotak "Salin" tiap kali seleksi berubah — andalan utama untuk copy,
     // tidak butuh izin Clipboard API (yang sering gagal diam-diam di http://).
     // Clipboard API tetap dicoba sebagai bonus kalau browser mengizinkan.
     term.onSelectionChange(() => {
+      if (activeId !== s.id) return;
       const t = term.getSelection();
       copyBox.value = t || '';
       if (t) navigator.clipboard?.writeText(t).catch(() => {});
     });
-    // TIDAK mencegat Ctrl+V — biarkan xterm.js pakai event 'paste' native
-    // browser (klik kanan / Ctrl+V ke textarea tersembunyinya). Itu tidak
-    // butuh izin Clipboard API sama sekali dan lebih bisa diandalkan.
-    host.onclick = () => term.focus();
     const ro = new ResizeObserver(() => { try { fit.fit(); } catch {} });
-    ro.observe(host);
-    timers.push({ close: () => { ro.disconnect(); ws?.close(); } });
+    ro.observe(box);
+    s.ro = ro;
+    timers.push({ close: () => { ro.disconnect(); s.ws?.close(); s.term?.dispose(); } });
+    sessions.push(s);
+    connectSession(s);
+    selectTab(id);
   }
-  sel.onchange = connect;
+
+  function closeSession(id) {
+    const idx = sessions.findIndex(x => x.id === id);
+    if (idx < 0) return;
+    const s = sessions[idx];
+    s.ro?.disconnect(); s.ws?.close(); s.term?.dispose(); s.box.remove();
+    sessions.splice(idx, 1);
+    if (activeId === id) {
+      const next = sessions[idx] || sessions[idx - 1];
+      if (next) selectTab(next.id);
+      else { activeId = null; renderTabs(); }
+    } else renderTabs();
+  }
+
+  // TIDAK mencegat Ctrl+V — biarkan xterm.js pakai event 'paste' native
+  // browser (klik kanan / Ctrl+V ke textarea tersembunyinya). Itu tidak
+  // butuh izin Clipboard API sama sekali dan lebih bisa diandalkan.
+  host.onclick = () => activeSession()?.term.focus();
+  sel.onchange = () => {
+    const s = activeSession();
+    if (!s) return;
+    s.target = sel.value;
+    connectSession(s);
+    renderTabs();
+  };
 
   api('/containers').then(({ containers }) => {
     containers.filter(c => c.state === 'running').forEach(c =>
       sel.append(el('option', { value: c.id }, 'Container: ' + c.name)));
   }).catch(() => {});
 
-  if (window.Terminal) connect();
+  if (window.Terminal) addSession();
   else {
     host.append(el('div', { style: 'color:#8b91a0;padding:14px;font-size:12.5px' }, 'Memuat terminal…'));
-    const t = setInterval(() => { if (window.Terminal) { clearInterval(t); connect(); } }, 120);
+    const t = setInterval(() => { if (window.Terminal) { clearInterval(t); addSession(); } }, 120);
     timers.push({ close: () => clearInterval(t) });
   }
 };

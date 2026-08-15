@@ -4,7 +4,7 @@
 /* ═══════════ Pusat notifikasi ═══════════ */
 VIEWS.events = () => {
   let data = { events: [], stats: {}, categories: {} };
-  let fCat = '', fSev = '';
+  let fCat = '', fSev = '', qText = '';
 
   const T = tabs([
     { id: 'all', n: 'All', i: 'logs' },
@@ -14,6 +14,11 @@ VIEWS.events = () => {
   mount(T.node);
   liveBadge(15);
 
+  // Kotak cari ditaruh di #actions (bukan di dalam body tab) supaya tidak
+  // ikut dibongkar-pasang tiap render ulang — kalau ikut, fokusnya lepas
+  // setiap kali ngetik satu huruf.
+  const search = searchBox('Cari event…', v => { qText = v; render(T.current, T.body); });
+  $('#actions').append(search);
   addAction('Mark read', 'search', async () => {
     await api('/events/read', { method: 'POST', body: JSON.stringify({}) });
     toast('All ditandai dibaca'); load();
@@ -30,7 +35,7 @@ VIEWS.events = () => {
 
   function renderList(body) {
     const list = data.events.filter(e =>
-      (!fCat || e.cat === fCat) && (!fSev || e.sev === fSev));
+      (!fCat || e.cat === fCat) && (!fSev || e.sev === fSev) && matches(qText, e.title, e.message));
 
     const chips = el('div', { class: 'row', style: 'flex-wrap:wrap;margin-bottom:12px' });
     const mkChip = (label, val, n) => {

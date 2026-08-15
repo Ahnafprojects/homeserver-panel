@@ -13,6 +13,7 @@ const CADDY_DIR = process.env.CADDY_DIR || '/caddy';
 const CADDYFILE = path.join(CADDY_DIR, 'Caddyfile');
 const SITES = path.join(STATE, 'sites.json');
 const CADDY_CONTAINER = process.env.CADDY_CONTAINER || 'caddy';
+const NET = process.env.APPS_NETWORK || 'apps';
 
 let sites = [];
 try { sites = JSON.parse(fs.readFileSync(SITES, 'utf8')); } catch {}
@@ -75,14 +76,37 @@ export function buildCaddyfile() {
   return head.concat(blocks).join('\n') + '\n';
 }
 
+// Caddy hanya bisa mem-proxy container yang satu jaringan Docker dengannya.
+// Stack yang dibuat lewat panel jalan di jaringan compose masing-masing,
+// jadi tanpa ini Caddy tidak akan pernah bisa menerjemahkan nama container
+// targetnya — domain akan selalu 502 walau konfigurasinya benar.
+async function ensureReachable(target) {
+  try {
+    const inspect = await runP('docker', ['inspect', target, '--format',
+      '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}']);
+    if (inspect.code !== 0) return { ok: false, reason: 'container tidak ditemukan' };
+    if (!inspect.out.split(/\s+/).includes(NET)) {
+      await runP('docker', ['network', 'connect', NET, target]);
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, reason: e.message }; }
+}
+
 export async function applyConfig() {
   await fsp.mkdir(CADDY_DIR, { recursive: true });
+  const unreachable = [];
+  for (const s of sites) {
+    const r = await ensureReachable(s.target);
+    if (!r.ok) unreachable.push(`${s.domain} → ${s.target} (${r.reason})`);
+  }
   const conf = buildCaddyfile();
   await fsp.writeFile(CADDYFILE, conf);
   // Muat ulang tanpa memutus koneksi yang sedang berjalan.
   const r = await runP('docker', ['exec', CADDY_CONTAINER,
     'caddy', 'reload', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile']);
-  return { ok: r.code === 0, message: r.out, config: conf };
+  return { ok: r.code === 0 && !unreachable.length, message: r.out, config: conf,
+    warning: unreachable.length
+      ? `Container belum bisa dijangkau Caddy: ${unreachable.join(', ')}` : undefined };
 }
 
 export async function caddyStatus() {

@@ -95,7 +95,11 @@ const I = {
   bell: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
   spark: '<path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/><circle cx="12" cy="12" r="3.2"/>',
   lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  unlock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
   logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>',
+  chevron: '<polyline points="9 18 15 12 9 6"/>',
+  grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>',
+  listv: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
 };
 const ic = (k, sz = 15, sw = 1.6) =>
   `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -255,15 +259,58 @@ const addAction = (label, icon, fn, cls = 'btn') => {
   const b = el('button', { class: cls, html: (icon ? ic(icon, 14) : '') + `<span>${label}</span>` });
   b.onclick = fn; $('#actions').append(b); return b;
 };
+// Kotak cari yang dipakai berulang di tiap pages berisi daftar (container,
+// stack, job, dst) — filter jalan di data yang sudah dimuat, tanpa panggil API lagi.
+const matches = (q, ...vals) => !q || vals.some(v => String(v ?? '').toLowerCase().includes(q));
+function searchBox(ph, onInput) {
+  const wrap2 = el('div', { style: 'position:relative;max-width:220px;flex:1;min-width:140px' });
+  const inp = el('input', { type: 'search', placeholder: ph,
+    style: 'padding-left:30px;width:100%' });
+  const icn = el('span', { style: 'position:absolute;left:9px;top:50%;transform:translateY(-50%);'
+    + 'color:var(--tx-3);pointer-events:none;display:flex', html: ic('search', 14) });
+  wrap2.append(icn, inp);
+  inp.oninput = () => onInput(inp.value.trim().toLowerCase());
+  return wrap2;
+}
 
 /* ═══════════ 1. Ringkasan ═══════════ */
 VIEWS.overview = () => {
   const stats = el('div', { class: 'stats' });
   const chartsWrap = el('div', { class: 'grid2' });
   const infoCard = el('div', { class: 'card' });
+  // Server nyimpen data detail (5 detik) 4 jam terakhir, plus ringkasan
+  // per-jam yang tahan sampai ~2 tahun — biar filter grafik bisa sampai
+  // bulan/tahun, bukan cuma jam-jaman.
+  const RANGE_LABELS = { '30m': '30 menit', '1h': '1 jam', '4h': '4 jam',
+    '1d': '1 hari', '7d': '7 hari', '30d': '1 bulan', '90d': '3 bulan',
+    '1y': '1 tahun', custom: 'Custom…' };
+  let range = localStorage.getItem('ov.range') || '4h';
+  const rangeSel = el('select', { style: 'max-width:120px' },
+    ...Object.entries(RANGE_LABELS).map(([k, l]) => el('option', { value: k }, l)));
+  rangeSel.value = range;
+
+  const fromInp = el('input', { type: 'datetime-local', style: 'max-width:172px' });
+  const toInp = el('input', { type: 'datetime-local', style: 'max-width:172px' });
+  const applyCustom = el('button', { class: 'btn', style: 'height:28px;font-size:11.5px' }, 'Terapkan');
+  const customBar = el('div', { class: 'row', style: `gap:6px;display:${range === 'custom' ? 'flex' : 'none'}` },
+    fromInp, el('span', { style: 'color:var(--tx-3)' }, '–'), toInp, applyCustom);
+
+  rangeSel.onchange = () => {
+    range = rangeSel.value; localStorage.setItem('ov.range', range);
+    customBar.style.display = range === 'custom' ? 'flex' : 'none';
+    if (range !== 'custom') loadHist();
+  };
+  applyCustom.onclick = () => {
+    if (!fromInp.value || !toInp.value) return toast('Isi tanggal mulai & akhir dulu');
+    if (new Date(fromInp.value).getTime() >= new Date(toInp.value).getTime())
+      return toast('Rentang tanggal tidak valid');
+    loadHist();
+  };
+  const secTitle = el('div', { class: 'sec', style: 'display:flex;align-items:center;gap:10px;flex-wrap:wrap' },
+    el('span', {}, 'Riwayat'), el('span', { class: 'sp' }), rangeSel, customBar);
   const root = el('div', {},
     el('div', { class: 'sec' }, 'Resources'), stats,
-    el('div', { class: 'sec' }, 'Riwayat 30 menit'), chartsWrap,
+    secTitle, chartsWrap,
     el('div', { class: 'sec' }, 'System'), infoCard);
   mount(root);
 
@@ -304,9 +351,19 @@ VIEWS.overview = () => {
     } catch (e) { stats.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }, 5000);
 
-  every(async () => {
+  async function loadHist() {
     try {
-      const { points } = await api('/system/history?n=360');
+      let url;
+      if (range === 'custom') {
+        if (!fromInp.value || !toInp.value) return;
+        const from = new Date(fromInp.value).getTime();
+        const to = new Date(toInp.value).getTime();
+        if (!(from < to)) return;
+        url = `/system/history?from=${from}&to=${to}`;
+      } else {
+        url = `/system/history?range=${range}`;
+      }
+      const { points } = await api(url);
       if (!points.length) return;
       chart(c1, [{ data: points.map(p => p.c), color: '#5b8def' },
                  { data: points.map(p => p.m), color: '#3dbb7d', fill: false }], { max: 100 });
@@ -318,7 +375,8 @@ VIEWS.overview = () => {
         { fmt: v => bytes(v) });
       chart(c4, [{ data: points.map(p => p.d), color: '#9aa0ac' }], { max: 100 });
     } catch {}
-  }, 10000);
+  }
+  every(loadHist, 10000);
 
   api('/system/info').then(({ docker: d }) => {
     if (!d) return;
@@ -338,9 +396,20 @@ VIEWS.overview = () => {
 
 /* ═══════════ 2. Container ═══════════ */
 VIEWS.containers = () => {
+  let all = [], q = '', showSystem = false;
   const wrap = el('div', { class: 'card' });
-  mount(wrap);
+  const search = searchBox('Cari container…', v => { q = v; render(); });
+  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   addAction('Refresh', 'refresh', () => load());
+
+  function unlockSystem() {
+    const pw = prompt('Container sistem (panel & caddy) disembunyikan supaya tidak gampang ke-klik hapus. '
+      + 'Masukkan kata sandi akunmu buat menampilkannya:');
+    if (pw === null) return;
+    api('/auth/verify', { method: 'POST', body: JSON.stringify({ password: pw }) })
+      .then(() => { showSystem = true; render(); })
+      .catch(e => toast(e.message));
+  }
 
   async function act(id, what, name) {
     if (what === 'remove' && !confirm(`Hapus container "${name}"? Tindakan ini permanen.`)) return;
@@ -352,10 +421,37 @@ VIEWS.containers = () => {
   }
 
   async function load() {
+    try { all = (await api('/containers')).containers; render(); }
+    catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
+  function render() {
     try {
-      const { containers } = await api('/containers');
+      const visible = showSystem ? all : all.filter(c => !c.system);
+      const hiddenCount = all.length - visible.length;
+      const barStyle = 'padding:9px 14px;font-size:11.5px;color:var(--tx-3);'
+        + 'border-bottom:1px solid var(--line)';
+      const unlockBar = hiddenCount > 0
+        ? (() => {
+            const link = el('a', { class: 'row', style: 'cursor:pointer;gap:5px;display:inline-flex;align-items:center',
+              html: ic('lock', 12) + `<span>${hiddenCount} container sistem disembunyikan — klik untuk lihat</span>` });
+            link.onclick = unlockSystem;
+            return el('div', { style: barStyle }, link);
+          })()
+        : showSystem
+        ? (() => {
+            const link = el('a', { class: 'row', style: 'cursor:pointer;gap:5px;display:inline-flex;align-items:center',
+              html: ic('unlock', 12) + '<span>Sembunyikan lagi container sistem</span>' });
+            link.onclick = () => { showSystem = false; render(); };
+            return el('div', { style: barStyle }, link);
+          })()
+        : null;
+
+      const containers = visible.filter(c => matches(q, c.name, c.image));
       if (!containers.length) {
-        wrap.replaceChildren(el('div', { class: 'empty', html: ic('box', 30, 1.3) + '<div>No containers</div>' }));
+        wrap.replaceChildren(...(unlockBar ? [unlockBar] : []),
+          el('div', { class: 'empty', html: ic('box', 30, 1.3)
+            + `<div>${visible.length ? 'No matching containers' : 'No containers'}</div>` }));
         return;
       }
       const tb = el('tbody');
@@ -382,12 +478,12 @@ VIEWS.containers = () => {
         tr.onclick = () => detail(c);
         tb.append(tr);
       });
-      wrap.replaceChildren(el('div', { class: 'tbl-wrap' },
+      wrap.replaceChildren(...(unlockBar ? [unlockBar] : []), el('div', { class: 'tbl-wrap' },
         el('table', {}, el('thead', {}, el('tr', {},
           el('th', {}, 'Containers'), el('th', {}, 'Status'),
           el('th', { class: 'num' }, 'CPU'), el('th', { class: 'num' }, 'Memory'),
           el('th', {}, 'Port'), el('th', {}, ''))), tb)));
-      $('#sub').textContent = `${containers.filter(c => c.state === 'running').length} dari ${containers.length} jalan`;
+      $('#sub').textContent = `${all.filter(c => c.state === 'running').length} dari ${all.length} jalan`;
     } catch (e) {
       wrap.replaceChildren(el('div', { class: 'empty' }, e.message));
     }
@@ -397,7 +493,10 @@ VIEWS.containers = () => {
     const body = el('div', {}, el('div', { class: 'empty' }, 'Loading…'));
     openDrawer(c.name, body);
     try {
-      const d = await api(`/containers/${c.id}/inspect`);
+      const [d, linkRes] = await Promise.all([
+        api(`/containers/${c.id}/inspect`),
+        api(`/containers/${encodeURIComponent(c.name)}/link`).catch(() => ({ url: null })),
+      ]);
       const row = (k, v) => el('tr', {}, el('td', { style: 'color:var(--tx-3);width:36%' }, k),
         el('td', { class: 'mono', style: 'word-break:break-all' }, v ?? '—'));
       const env = (d.Config?.Env || []).map(e => {
@@ -407,6 +506,51 @@ VIEWS.containers = () => {
         const secret = /pass|secret|token|key|pwd/i.test(k);
         return k + '=' + (secret ? '••••••••' : e.slice(i + 1));
       });
+
+      // ── Port: link lokal langsung ke tiap port yang dipublikasikan ──
+      const portRows = (c.ports || []).map(p2 => {
+        const [hostPort, contPort] = p2.split(':');
+        const url = `http://${location.hostname}:${hostPort}`;
+        return el('tr', {}, el('td', { class: 'mono' }, `${hostPort} → ${contPort}`),
+          el('td', {}, el('a', { class: 'ib', title: 'Buka ' + url, html: ic('search', 14),
+            href: url, target: '_blank' })));
+      });
+      const portsCard = c.ports?.length
+        ? el('div', { class: 'card' }, el('table', {}, el('tbody', {}, ...portRows)))
+        : el('div', { class: 'card' }, el('div', { class: 'empty', style: 'padding:16px' },
+            'Container ini tidak mempublikasikan port apa pun.'));
+
+      // ── Domain publik: link manual (mis. lewat Cloudflare Tunnel) ──
+      const linkArea = el('div');
+      function paintLink(url) {
+        if (url) {
+          const open = el('a', { class: 'btn', title: url,
+            html: ic('net', 13) + `<span>${esc(url)}</span>` });
+          open.href = url; open.target = '_blank';
+          const edit = el('button', { class: 'ib', title: 'Ubah', html: ic('edit', 14) });
+          edit.onclick = () => promptLink(url);
+          const del = el('button', { class: 'ib', title: 'Hapus', html: ic('trash', 14) });
+          del.onclick = async () => {
+            await api(`/containers/${encodeURIComponent(c.name)}/link`, { method: 'POST',
+              body: JSON.stringify({ url: '' }) });
+            paintLink(null);
+          };
+          linkArea.replaceChildren(el('div', { class: 'row' }, open, edit, del));
+        } else {
+          const add = el('button', { class: 'btn', html: ic('plus', 13) + '<span>Tambah link publik</span>' });
+          add.onclick = () => promptLink('');
+          linkArea.replaceChildren(add);
+        }
+      }
+      function promptLink(cur) {
+        const url = prompt('URL publik untuk container ini (mis. https://sub.domainmu.com):', cur || 'https://');
+        if (url === null) return;
+        api(`/containers/${encodeURIComponent(c.name)}/link`, { method: 'POST',
+          body: JSON.stringify({ url: url.trim() }) })
+          .then(r => paintLink(r.url)).catch(e => toast(e.message));
+      }
+      paintLink(linkRes.url);
+
       body.replaceChildren(
         el('div', { class: 'sec' }, 'Umum'),
         el('div', { class: 'card' }, el('table', {}, el('tbody', {},
@@ -414,6 +558,10 @@ VIEWS.containers = () => {
           row('Dibuat', new Date(c.created).toLocaleString('id-ID')),
           row('Restart', d.HostConfig?.RestartPolicy?.Name || '—'),
           row('ID', c.id.slice(0, 12))))),
+        el('div', { class: 'sec' }, 'Port'),
+        portsCard,
+        el('div', { class: 'sec' }, 'Domain publik'),
+        linkArea,
         el('div', { class: 'sec' }, 'Variabel lingkungan'),
         el('div', { class: 'card' }, el('div', { class: 'card-b mono',
           style: 'white-space:pre-wrap;word-break:break-all;font-size:11.5px' },
@@ -499,6 +647,9 @@ VIEWS.logs = () => {
 VIEWS.files = () => {
   let cwd = '';
   let curRoot = 'data';
+  let view = localStorage.getItem('files.view') === 'list' ? 'list' : 'grid';
+  let selName = null;
+  let qFilter = '';
   const ROOT_LABELS = { data: 'data', stacks: 'stacks', host: 'laptop (semua file)' };
   const crumb = el('div', { class: 'crumb' });
   const rootSel = el('select', { style: 'max-width:220px' },
@@ -507,29 +658,45 @@ VIEWS.files = () => {
     el('option', { value: 'host' }, 'Laptop (semua file)'));
   const hostWarn = el('div', { class: 'pill warn', style: 'display:none' },
     '⚠ Ini seluruh filesystem laptop — hati-hati edit/hapus file sistem');
-  const wrap = el('div', { class: 'card' });
-  mount(el('div', {},
-    el('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap' },
-      rootSel, crumb, el('span', { class: 'sp' }), hostWarn),
-    wrap));
+  const btnGrid = el('button', { class: 'ib', title: 'Tampilan ikon', html: ic('grid', 15) });
+  const btnList = el('button', { class: 'ib', title: 'Tampilan daftar', html: ic('listv', 15) });
+  const viewToggle = el('div', { class: 'row', style: 'gap:2px' }, btnGrid, btnList);
+  const search = searchBox('Cari nama file…', v => { qFilter = v; load(); });
+  const tree = el('div', { style: 'width:200px;flex:0 0 200px;overflow:auto;'
+    + 'border-right:1px solid var(--line);padding:6px 4px' });
+  const wrap = el('div', { class: 'card', style: 'flex:1;min-width:0;overflow:auto;'
+    + 'border-radius:0;border:none' });
+  mount(el('div', { style: 'display:flex;flex-direction:column;height:100%;padding:14px 16px' },
+    el('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap;flex:0 0 auto' },
+      rootSel, crumb, el('span', { class: 'sp' }), search, hostWarn, viewToggle),
+    el('div', { class: 'card', style: 'display:flex;align-items:stretch;flex:1;min-height:0;overflow:hidden' },
+      tree, wrap)), { full: true });
   rootSel.value = curRoot;
   rootSel.onchange = () => { curRoot = rootSel.value; cwd = '';
-    hostWarn.style.display = curRoot === 'host' ? '' : 'none'; load(); };
+    hostWarn.style.display = curRoot === 'host' ? '' : 'none'; resetTree(); load(); };
+
+  function setView(v) { view = v; localStorage.setItem('files.view', v);
+    const on = (b, is) => { b.style.background = is ? 'var(--acc)' : ''; b.style.color = is ? '#fff' : ''; };
+    on(btnGrid, v === 'grid'); on(btnList, v === 'list'); load(); }
+  btnGrid.onclick = () => setView('grid');
+  btnList.onclick = () => setView('list');
+  setView(view);
 
   const q = (extra = '') => `root=${encodeURIComponent(curRoot)}${extra}`;
 
   const fileInput = el('input', { type: 'file', multiple: '', style: 'display:none' });
   document.body.append(fileInput);
   fileInput.onchange = async () => {
-    for (const f of fileInput.files) {
-      try {
-        await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(cwd)}&name=${encodeURIComponent(f.name)}`,
-          { method: 'POST', body: f });
-        toast(`${f.name} diunggah`);
-      } catch { toast('Gagal mengunggah ' + f.name); }
-    }
+    for (const f of fileInput.files) await uploadInto(cwd, f);
     fileInput.value = ''; load();
   };
+  async function uploadInto(destPath, f) {
+    try {
+      await fetch(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(f.name)}`,
+        { method: 'POST', body: f });
+      toast(`${f.name} diunggah`);
+    } catch { toast('Gagal mengunggah ' + f.name); }
+  }
 
   addAction('Unggah', 'up', () => fileInput.click(), 'btn pri');
   addAction('Folder baru', 'plus', async () => {
@@ -537,9 +704,9 @@ VIEWS.files = () => {
     if (!name) return;
     try { await api('/files/mkdir', { method: 'POST',
       body: JSON.stringify({ path: cwd, name, root: curRoot }) });
-      load(); } catch (e) { toast(e.message); }
+      refreshTree(); load(); } catch (e) { toast(e.message); }
   });
-  addAction('Refresh', 'refresh', () => load());
+  addAction('Refresh', 'refresh', () => { refreshTree(); load(); });
 
   function setCrumb() {
     const parts = cwd ? cwd.split('/').filter(Boolean) : [];
@@ -576,6 +743,30 @@ VIEWS.files = () => {
     } catch (e) { toast(e.message); }
   }
 
+  // Pindahkan item lewat drag & drop, atau unggah kalau yang di-drop berasal
+  // dari luar jendela (file explorer OS). destPath = folder tujuan.
+  async function handleDrop(e, destPath) {
+    e.preventDefault(); e.stopPropagation();
+    const text = e.dataTransfer.getData('text/plain');
+    if (text) {
+      try {
+        const data = JSON.parse(text);
+        if (data.from) {
+          const to = (destPath ? destPath + '/' : '') + data.from.split('/').pop();
+          if (to === data.from || data.from === destPath) return;
+          try { await api('/files/rename', { method: 'POST',
+            body: JSON.stringify({ from: data.from, to, root: curRoot }) });
+            refreshTree(); load(); } catch (err) { toast(err.message); }
+          return;
+        }
+      } catch {}
+    }
+    if (e.dataTransfer.files?.length) {
+      for (const f of e.dataTransfer.files) await uploadInto(destPath, f);
+      refreshTree(); load();
+    }
+  }
+
   // Menu klik-kanan per item — aksi (ganti nama/hapus/unduh) dipindah ke
   // sini karena grid ikon tidak punya ruang buat tombol di tiap baris.
   function itemMenu(e, it, full) {
@@ -594,60 +785,157 @@ VIEWS.files = () => {
     menu.append(row('Ganti nama', async () => {
       const to = prompt('Nama baru:', it.name); if (!to || to === it.name) return;
       try { await api('/files/rename', { method: 'POST', body: JSON.stringify({
-        from: full, to: (cwd ? cwd + '/' : '') + to, root: curRoot }) }); load(); }
+        from: full, to: (cwd ? cwd + '/' : '') + to, root: curRoot }) }); refreshTree(); load(); }
       catch (err) { toast(err.message); }
     }));
     menu.append(row('Hapus', async () => {
       if (!confirm(`Hapus "${it.name}"?`)) return;
       try { await api('/files/delete', { method: 'POST',
         body: JSON.stringify({ path: full, root: curRoot }) });
-        load(); } catch (err) { toast(err.message); }
+        refreshTree(); load(); } catch (err) { toast(err.message); }
     }));
     document.body.append(menu);
     setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
   }
 
+  // ── Panel folder (sidebar), kayak Explorer/Finder ──
+  const treeState = new Map(); // path -> { expanded, children }
+  function getTreeState(path) {
+    if (!treeState.has(path)) treeState.set(path, { expanded: false, children: null });
+    return treeState.get(path);
+  }
+  function resetTree() {
+    treeState.clear();
+    getTreeState('').expanded = true;
+    renderTree();
+    loadDirs('').then(children => { getTreeState('').children = children; renderTree(); });
+  }
+  // Refresh isi folder yang lagi kebuka di sidebar tanpa nutup yang lain
+  // (dipakai setelah buat/hapus/ganti-nama/pindah, biar state expand tetap).
+  async function refreshTree() {
+    const open = [...treeState.entries()].filter(([, st]) => st.expanded).map(([p]) => p);
+    await Promise.all(open.map(async p => { getTreeState(p).children = await loadDirs(p); }));
+    renderTree();
+  }
+  async function loadDirs(path) {
+    try {
+      const { items } = await api(`/files/list?${q()}&path=${encodeURIComponent(path)}`);
+      return items.filter(it => it.dir);
+    } catch { return []; }
+  }
+  function renderTree() { tree.replaceChildren(treeNode('', ROOT_LABELS[curRoot] || curRoot, 0)); }
+  function treeNode(path, name, depth) {
+    const st = getTreeState(path);
+    const wrapN = el('div', {});
+    const row = el('div', { class: 'item' + (cwd === path ? ' on' : ''),
+      style: `padding-left:${6 + depth * 14}px;cursor:pointer;position:relative` });
+    const chev = el('span', { style: 'width:14px;height:14px;flex:0 0 14px;display:inline-flex;'
+      + `transition:transform .12s;transform:rotate(${st.expanded ? 90 : 0}deg)`, html: ic('chevron', 12) });
+    row.append(chev, el('span', { style: 'flex:0 0 auto;display:inline-flex;color:var(--acc)', html: ic('fold', 14) }),
+      el('span', { style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, name));
+    row.onclick = () => { cwd = path; load(); renderTree(); };
+    chev.onclick = async (e) => {
+      e.stopPropagation();
+      st.expanded = !st.expanded;
+      if (st.expanded && st.children === null) { st.children = await loadDirs(path); }
+      renderTree();
+    };
+    row.ondragover = (e) => { e.preventDefault(); row.style.background = 'var(--acc-soft)'; };
+    row.ondragleave = () => { row.style.background = ''; };
+    row.ondrop = (e) => { row.style.background = ''; handleDrop(e, path); };
+    wrapN.append(row);
+    if (st.expanded && st.children) {
+      st.children.forEach(c => wrapN.append(treeNode((path ? path + '/' : '') + c.name, c.name, depth + 1)));
+    }
+    return wrapN;
+  }
+
+  wrap.ondragover = (e) => { e.preventDefault(); wrap.style.background = 'var(--acc-soft)'; };
+  wrap.ondragleave = () => { wrap.style.background = ''; };
+  wrap.ondrop = (e) => { wrap.style.background = ''; handleDrop(e, cwd); };
+
+  function itemCell(it, full) {
+    const cell = el('div', { title: it.name, draggable: 'true',
+      style: view === 'grid'
+        ? 'width:104px;display:flex;flex-direction:column;align-items:center;'
+          + 'padding:10px 6px;border-radius:8px;cursor:default;text-align:center'
+        : 'display:flex;align-items:center;gap:10px;padding:6px 10px;'
+          + 'border-radius:6px;cursor:default' });
+    if (selName === it.name) cell.style.background = 'var(--acc-soft)';
+    cell.onmouseenter = () => { if (selName !== it.name) cell.style.background = 'var(--sunken)'; };
+    cell.onmouseleave = () => { if (selName !== it.name) cell.style.background = ''; };
+    if (view === 'grid') {
+      cell.append(
+        el('div', { style: 'height:44px;display:flex;align-items:center;justify-content:center;'
+          + `color:${it.dir ? 'var(--acc)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 40, 1.2) }),
+        el('div', { style: 'font-size:11px;margin-top:6px;line-height:1.3;word-break:break-word;'
+          + 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'
+          + 'max-height:29px;width:100%' }, it.name),
+        el('div', { style: 'font-size:9.5px;color:var(--tx-3);margin-top:2px' },
+          it.dir ? '' : bytes(it.size)));
+    } else {
+      cell.append(
+        el('div', { style: 'flex:0 0 20px;display:flex;align-items:center;justify-content:center;'
+          + `color:${it.dir ? 'var(--acc)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 17, 1.4) }),
+        el('div', { style: 'flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;'
+          + 'white-space:nowrap' }, it.name),
+        el('div', { style: 'flex:0 0 70px;font-size:11px;color:var(--tx-3);text-align:right' },
+          it.dir ? '' : bytes(it.size)),
+        el('div', { style: 'flex:0 0 130px;font-size:11px;color:var(--tx-3);text-align:right' },
+          it.mtime ? new Date(it.mtime).toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' }) : '—'));
+    }
+    cell.onclick = () => { selName = it.name; load(); };
+    cell.ondblclick = () => open(it);
+    cell.oncontextmenu = (e) => { e.preventDefault(); selName = it.name; itemMenu(e, it, full); };
+    cell.ondragstart = (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', JSON.stringify({ from: full }));
+    };
+    if (it.dir) {
+      cell.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); cell.style.background = 'var(--acc-soft)'; };
+      cell.ondragleave = () => { cell.style.background = selName === it.name ? 'var(--acc-soft)' : ''; };
+      cell.ondrop = (e) => handleDrop(e, full);
+    }
+    return cell;
+  }
+
   async function load() {
     setCrumb();
     try {
-      const { items } = await api(`/files/list?${q()}&path=${encodeURIComponent(cwd)}`);
+      const all = (await api(`/files/list?${q()}&path=${encodeURIComponent(cwd)}`)).items;
+      const items = qFilter ? all.filter(it => matches(qFilter, it.name)) : all;
       if (!items.length) {
-        wrap.replaceChildren(el('div', { class: 'empty', html: ic('folder', 30, 1.3) + '<div>Empty folder</div>' }));
+        wrap.replaceChildren(el('div', { class: 'empty', html: ic('folder', 30, 1.3)
+          + `<div>${all.length ? 'No matching files' : 'Empty folder'}</div>` }));
         $('#sub').textContent = '0 item';
         return;
       }
-      const grid = el('div', { style: 'display:flex;flex-wrap:wrap;gap:2px;padding:14px;'
-        + 'align-content:flex-start' });
-      items.forEach(it => {
-        const full = (cwd ? cwd + '/' : '') + it.name;
-        const cell = el('div', { title: it.name, style: 'width:104px;display:flex;flex-direction:column;'
-          + 'align-items:center;padding:10px 6px;border-radius:8px;cursor:pointer;text-align:center' });
-        cell.onmouseenter = () => cell.style.background = 'var(--sunken)';
-        cell.onmouseleave = () => cell.style.background = '';
-        cell.append(
-          el('div', { style: 'height:44px;display:flex;align-items:center;justify-content:center;'
-            + `color:${it.dir ? 'var(--accent,#5b8def)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 40, 1.2) }),
-          el('div', { style: 'font-size:11px;margin-top:6px;line-height:1.3;word-break:break-word;'
-            + 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'
-            + 'max-height:29px;width:100%' }, it.name),
-          el('div', { style: 'font-size:9.5px;color:var(--tx-3);margin-top:2px' },
-            it.dir ? '' : bytes(it.size)));
-        cell.onclick = () => open(it);
-        cell.oncontextmenu = (e) => { e.preventDefault(); itemMenu(e, it, full); };
-        grid.append(cell);
-      });
-      wrap.replaceChildren(grid);
+      const list = el('div', { style: view === 'grid'
+        ? 'display:flex;flex-wrap:wrap;gap:2px;padding:14px;align-content:flex-start'
+        : 'display:flex;flex-direction:column;padding:8px' });
+      if (view === 'list') {
+        list.append(el('div', { style: 'display:flex;align-items:center;gap:10px;padding:4px 10px 8px;'
+          + 'font-size:10.5px;color:var(--tx-3);text-transform:uppercase;letter-spacing:.03em' },
+          el('div', { style: 'flex:0 0 20px' }), el('div', { style: 'flex:1' }, 'Nama'),
+          el('div', { style: 'flex:0 0 70px;text-align:right' }, 'Ukuran'),
+          el('div', { style: 'flex:0 0 130px;text-align:right' }, 'Diubah')));
+      }
+      items.forEach(it => list.append(itemCell(it, (cwd ? cwd + '/' : '') + it.name)));
+      wrap.replaceChildren(list);
       $('#sub').textContent = `${items.length} item`;
     } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
+  resetTree();
   liveBadge(15);
   every(load, 15000);
 };
 
 /* ═══════════ Uptime monitoring ═══════════ */
 VIEWS.monitor = () => {
+  let all = [], q = '';
   const wrap = el('div');
-  mount(wrap);
+  const search = searchBox('Cari layanan…', v => { q = v; render(); });
+  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   liveBadge(20);
   addAction('Add check', 'plus', () => form(), 'btn pri');
   addAction('Refresh', 'refresh', () => load());
@@ -722,9 +1010,13 @@ VIEWS.monitor = () => {
   }
 
   async function load() {
+    try { all = (await api('/monitor/checks')).checks; render(); }
+    catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
+  function render() {
     try {
-      const { checks } = await api('/monitor/checks');
-      if (!checks.length) {
+      if (!all.length) {
         wrap.replaceChildren(el('div', { class: 'card' },
           el('div', { class: 'empty', html: ic('pulse', 30, 1.3) +
             '<div>No services monitored</div>' +
@@ -732,22 +1024,29 @@ VIEWS.monitor = () => {
             + 'moment something stops answering.</div>' })));
         return;
       }
-      const upNow = checks.filter(c => c.up).length;
+      const checks = all.filter(c => matches(q, c.name, c.url, c.host));
+      const upNow = all.filter(c => c.up).length;
       const avg24 = (() => {
-        const v = checks.map(c => c.w24?.pct).filter(x => x != null);
+        const v = all.map(c => c.w24?.pct).filter(x => x != null);
         return v.length ? (v.reduce((a, b) => a + b, 0) / v.length).toFixed(2) + '%' : '—';
       })();
       const summary = el('div', { class: 'grid2', style: 'margin-bottom:14px' },
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'SERVICES UP'),
-          el('div', { class: 'v', style: upNow < checks.length ? 'color:var(--bad)' : '' },
-            `${upNow}/${checks.length}`),
-          el('div', { class: 'm' }, upNow === checks.length ? 'all responding' : 'something is down')),
+          el('div', { class: 'v', style: upNow < all.length ? 'color:var(--bad)' : '' },
+            `${upNow}/${all.length}`),
+          el('div', { class: 'm' }, upNow === all.length ? 'all responding' : 'something is down')),
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'AVG UPTIME 24H'),
           el('div', { class: 'v' }, avg24), el('div', { class: 'm' }, 'across all checks')),
         el('div', { class: 'stat' }, el('div', { class: 'k' }, 'INCIDENTS 24H'),
-          el('div', { class: 'v' }, String(checks.reduce((n, c) => n + (c.w24?.incidents || 0), 0))),
+          el('div', { class: 'v' }, String(all.reduce((n, c) => n + (c.w24?.incidents || 0), 0))),
           el('div', { class: 'm' }, 'times a service went down')));
 
+      if (!checks.length) {
+        wrap.replaceChildren(summary, el('div', { class: 'card' },
+          el('div', { class: 'empty', html: ic('search', 30, 1.3) + '<div>No matching services</div>' })));
+        $('#sub').textContent = `${upNow}/${all.length} up`;
+        return;
+      }
       const cards = el('div', { class: 'grid2' });
       checks.forEach(c => {
         const h = c.hist || [];
@@ -796,7 +1095,7 @@ VIEWS.monitor = () => {
         cards.append(card);
       });
       wrap.replaceChildren(summary, cards);
-      $('#sub').textContent = `${upNow}/${checks.length} up`;
+      $('#sub').textContent = `${upNow}/${all.length} up`;
     } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
   every(load, 20000);

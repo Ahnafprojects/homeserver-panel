@@ -8,6 +8,10 @@ import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 
 const STACKS = process.env.STACKS_DIR || '/stacks';
+// Path yang sama, tapi dilihat dari HOST (bukan dari dalam container) —
+// dibutuhkan buat perintah git yang dijalankan lewat nsenter, karena begitu
+// masuk namespace host, /stacks container tidak ada artinya lagi.
+const STACKS_HOST = process.env.STACKS_HOST_DIR || '/srv/stacks';
 const STATE = process.env.STATE_DIR || '/state';
 const META = path.join(STATE, 'stacks.json');
 
@@ -16,11 +20,16 @@ const saveMeta = (m) => { try { fsSync.mkdirSync(STATE, { recursive: true });
   fsSync.writeFileSync(META, JSON.stringify(m, null, 2)); } catch {} };
 
 const safeName = (n) => {
-  const s = String(n || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
-  if (!s) throw new Error('Invalid stack name');
+  // Titik diizinkan (nama domain kayak "ahnafabdun.me" itu wajar buat nama
+  // stack) — tapi ".." harus tetap ditolak, itu bisa dipakai buat keluar
+  // dari folder /stacks lewat path.join.
+  const s = String(n || '').toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+  if (!s || s === '.' || s === '..' || s.includes('..')) throw new Error('Invalid stack name');
   return s;
 };
 const dirOf = (n) => path.join(STACKS, safeName(n));
+const hostDirOf = (n) => path.join(STACKS_HOST, safeName(n));
+export { dirOf };
 
 /* Jalankan perintah dan alirkan keluarannya baris demi baris. */
 export function run(cmd, args, opts = {}) {
@@ -34,6 +43,32 @@ export function run(cmd, args, opts = {}) {
   emitter.kill = () => p.kill('SIGTERM');
   return emitter;
 }
+// Cari user host yang sudah login `gh` (GitHub CLI), supaya clone repo
+// privat otomatis kepakai kredensial itu lewat credential helper git-nya —
+// tidak perlu token ditempel manual tiap kali kalau memang repo itu sudah
+// bisa diakses akun GitHub yang login di laptop ini.
+let cachedHostUser = null;
+async function hostGhUser() {
+  if (cachedHostUser) return cachedHostUser;
+  const { code, out } = await runP('nsenter', ['-t', '1', '-m', '-u', '-n', '-i', '--', 'sh', '-c',
+    'for d in /home/*/; do u=$(basename "$d"); [ -f "$d/.config/gh/hosts.yml" ] && echo "$u" && break; done']);
+  cachedHostUser = (code === 0 && out.trim()) ? out.trim().split('\n')[0] : (process.env.HOST_USER || null);
+  return cachedHostUser;
+}
+
+/* Jalankan perintah git lewat host (nsenter), bukan di dalam container —
+   supaya ikut config & credential helper `gh` milik user itu di laptop.
+   Kalau tidak ketemu user yang login gh, jalan sebagai root di host (masih
+   lebih baik daripada di dalam container yang git-nya sama sekali belum
+   pernah login apa pun). */
+const shQuote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+async function runOnHost(cmd, args) {
+  const user = await hostGhUser();
+  const quoted = [cmd, ...args].map(shQuote).join(' ');
+  const inner = user ? `su ${shQuote(user)} -c ${shQuote(quoted)}` : quoted;
+  return run('nsenter', ['-t', '1', '-m', '-u', '-n', '-i', '--', 'sh', '-c', inner]);
+}
+
 export const runP = (cmd, args, opts = {}) => new Promise((resolve) => {
   const out = [];
   const e = run(cmd, args, opts);
@@ -121,11 +156,18 @@ export async function gitClone(name, repo, branch, onLine) {
   if (branch && !/^[A-Za-z0-9._\/-]{1,120}$/.test(branch)) {
     throw new Error('Invalid branch name');
   }
-  const args = ['clone', '--depth', '30'];
+  // --single-branch wajib: tanpa ini, shallow clone tetap menarik histori
+  // dari SEMUA branch repo (bukan cuma satu). Untuk repo dengan banyak
+  // branch itu bisa jadi transfer besar yang putus di tengah jalan
+  // ("early EOF") alih-alih gagal dengan pesan yang jelas.
+  const args = ['clone', '--depth', '30', '--single-branch'];
   if (branch) args.push('-b', branch);
-  args.push('--', repo, dir);
+  // Clone dijalankan lewat host (bukan di dalam container) supaya otomatis
+  // ikut login `gh` yang sudah ada di laptop — repo privat yang sudah bisa
+  // diakses akun GitHub itu langsung jalan tanpa token ditempel manual.
+  args.push('--', repo, hostDirOf(name));
+  const e = await runOnHost('git', args);
   return new Promise((resolve) => {
-    const e = run('git', args);
     e.onLine = onLine;
     e.onDone = (code) => {
       if (code === 0) {
@@ -137,10 +179,10 @@ export async function gitClone(name, repo, branch, onLine) {
     };
   });
 }
-export const gitPull = (name, onLine) => new Promise((resolve) => {
-  const e = run('git', ['pull', '--ff-only'], { cwd: dirOf(name) });
-  e.onLine = onLine; e.onDone = resolve;
-});
+export const gitPull = async (name, onLine) => {
+  const e = await runOnHost('git', ['-C', hostDirOf(name), 'pull', '--ff-only']);
+  return new Promise((resolve) => { e.onLine = onLine; e.onDone = resolve; });
+};
 export const gitCheckout = (name, ref, onLine) => new Promise((resolve) => {
   if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(String(ref || ''))) {
     onLine?.('ERROR: invalid ref'); resolve(1); return;

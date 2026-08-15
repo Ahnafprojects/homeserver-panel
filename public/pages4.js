@@ -5,6 +5,7 @@
 /* ═══════════ Domain & reverse proxy ═══════════ */
 VIEWS.domains = () => {
   let data = { sites: [], certs: [], caddy: null, config: '' };
+  let qText = '';
 
   const T = tabs([
     { id: 'list', n: 'Domain', i: 'net' },
@@ -12,6 +13,9 @@ VIEWS.domains = () => {
   ], (id, body) => id === 'list' ? renderList(body) : renderConfig(body));
   mount(T.node);
   liveBadge(30);
+  // Persisten di #actions supaya fokus kotak cari tidak lepas tiap render ulang.
+  const search = searchBox('Search domains…', v => { qText = v; if (T.current === 'list') renderList(T.body); });
+  $('#actions').append(search);
   addAction('Add domain', 'plus', () => form(), 'btn pri');
   addAction('Refresh', 'refresh', () => load());
 
@@ -46,10 +50,12 @@ VIEWS.domains = () => {
     b.onclick = async () => {
       try {
         b.disabled = true;
-        await api('/sites', { method: 'POST', body: JSON.stringify({
+        const r = await api('/sites', { method: 'POST', body: JSON.stringify({
           domain: domain.value.trim(), target: target.value.trim(),
           port: port.value || 80, email: email.value.trim() }) });
-        closeDrawer(); toast('Domain added'); load();
+        closeDrawer();
+        toast(r.warning ? r.warning : 'Domain added');
+        load();
       } catch (e) { toast(e.message); } finally { b.disabled = false; }
     };
 
@@ -61,9 +67,11 @@ VIEWS.domains = () => {
       el('div', { class: 'field' }, el('label', {}, 'Port inside container'), port),
       el('div', { class: 'field' }, el('label', {}, "Admin email (for Let's Encrypt)"), email),
       el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
-        'Certificate HTTPS diterbitkan otomatis begitu domain sudah mengarah ke server ini. '
-        + 'Ports 80 and 443 must be reachable from the internet. '
-        + 'Domains ending in .local or .test use an internal certificate.'),
+        'HTTPS certificate is issued automatically once the domain points to this server. '
+        + "Ports 80 and 443 must be reachable from the internet — if you're using Cloudflare "
+        + 'Tunnel like this panel does, new domains must also be added to the tunnel config, '
+        + 'not just here. '
+        + 'Domains ending in .local or .test use an internal certificate (no internet needed).'),
       el('div', { class: 'row' }, b)));
   }
 
@@ -87,8 +95,15 @@ VIEWS.domains = () => {
       return;
     }
 
+    const sites = data.sites.filter(s => matches(qText, s.domain, s.target));
+    if (!sites.length) {
+      body.replaceChildren(head, el('div', { class: 'card' },
+        el('div', { class: 'empty', html: ic('search', 30, 1.3) + '<div>No matching domains</div>' })));
+      return;
+    }
+
     const tb = el('tbody');
-    data.sites.forEach(s => {
+    sites.forEach(s => {
       const cert = data.certs.find(x => x.domain === s.domain);
       const days = cert?.daysLeft;
       const certPill = cert?.kind === 'internal'
@@ -120,7 +135,7 @@ VIEWS.domains = () => {
     const apply = el('button', { class: 'btn pri', html: ic('refresh', 13) + '<span>Apply again</span>' });
     apply.onclick = async () => {
       try { const r = await api('/sites/apply', { method: 'POST' });
-        toast(r.ok ? 'Configuration dimuat ulang' : 'Gagal: ' + (r.message || '')); }
+        toast(r.ok ? 'Configuration reloaded' : (r.warning || 'Failed: ' + (r.message || ''))); }
       catch (e) { toast(e.message); }
     };
     body.replaceChildren(

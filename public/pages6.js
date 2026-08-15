@@ -13,7 +13,9 @@ VIEWS.editor = () => {
   let open = [];            // { root, path, model, dirty }
   let active = null;
   let editor = null;
-  let termOpen = false, term = null, sock = null, fitAddon = null;
+  let termOpen = false;
+  let termSessions = [], activeTermId = null, termSeq = 0;
+  const activeTermSession = () => termSessions.find(s => s.id === activeTermId) || null;
   /* Autosave: 'off' | 'delay' | 'blur'
      'delay' menunggu berhenti mengetik dulu; menulis tiap ketikan itu boros
      untuk SSD dan memberatkan CPU lama. */
@@ -34,7 +36,8 @@ VIEWS.editor = () => {
     style: 'width:24px;height:24px', html: ic('folder', 13) });
   wsSwitch.onclick = () => pickWorkspace();
 
-  const side = el('div', { style: 'width:236px;flex:0 0 236px;border-right:1px solid var(--line);'
+  const side = el('div', { class: 'ed-side', style: 'width:236px;flex:0 0 236px;'
+    + 'border-right:1px solid var(--line);'
     + 'display:flex;flex-direction:column;background:var(--surface);min-height:0' },
     el('div', { style: 'padding:7px 8px;border-bottom:1px solid var(--line);display:flex;'
       + 'flex-direction:column;gap:6px' },
@@ -46,8 +49,30 @@ VIEWS.editor = () => {
     + 'background:var(--surface);border-bottom:1px solid var(--line)' });
   const host = el('div', { style: 'flex:1;min-height:0' });
   let termHeight = +localStorage.getItem('ed.termHeight') || 230;
+  // Bilah tab terminal — satu panel bisa punya beberapa sesi sekaligus,
+  // kayak VS Code (Terminal 1, Terminal 2, dst), masing-masing WebSocket sendiri.
+  const termTabBar = el('div', { style: 'height:26px;flex:0 0 26px;display:flex;align-items:center;'
+    + 'gap:2px;padding:0 4px;overflow-x:auto;border-bottom:1px solid #22252b' });
+  const termBody = el('div', { style: 'flex:1;min-height:0;position:relative' });
+  const termAddBtn = el('button', { class: 'ib', title: 'Terminal baru',
+    style: 'width:22px;height:22px;flex:0 0 22px;color:#9aa0ac', html: ic('plus', 12) });
+  termAddBtn.onclick = () => addTerminal();
+  // HP sering tidak kirim Enter/Tab/Esc dengan benar lewat keyboard
+  // virtualnya — kirim langsung byte-nya ke terminal, tidak lewat event keyboard.
+  const termKeyBtn = (label, bytes, title) => {
+    const b = el('button', { title: title || label, style: 'height:22px;padding:0 8px;'
+      + 'font-size:11px;flex:0 0 auto;border-radius:4px;border:1px solid #2f3238;'
+      + 'background:#1b1d23;color:#9aa0ac;cursor:pointer' }, label);
+    b.onclick = () => { const s = activeTermSession(); if (s?.sock.readyState === 1) s.sock.send(bytes); };
+    return b;
+  };
+  const termKeyBar = el('div', { style: 'height:26px;flex:0 0 26px;display:flex;align-items:center;'
+    + 'gap:4px;padding:0 4px;overflow-x:auto;border-bottom:1px solid #22252b' },
+    termKeyBtn('Esc', '\x1b'), termKeyBtn('Tab', '\t'), termKeyBtn('Ctrl+C', '\x03'),
+    termKeyBtn('↑', '\x1b[A'), termKeyBtn('↓', '\x1b[B'), termKeyBtn('←', '\x1b[D'), termKeyBtn('→', '\x1b[C'),
+    termKeyBtn('Enter ↵', '\r', 'Kirim Enter — pakai ini kalau keyboard HP tidak mengirim Enter'));
   const termPane = el('div', { style: `display:none;height:${termHeight}px;flex:0 0 ${termHeight}px;`
-    + 'background:#0b0c0f;padding:5px' });
+    + 'background:#0b0c0f;flex-direction:column' }, termTabBar, termKeyBar, termBody);
   const termResize = el('div', { style: 'display:none;height:5px;flex:0 0 5px;cursor:ns-resize;'
     + 'background:var(--line)' });
   termResize.onmouseenter = () => termResize.style.background = 'var(--accent, #5b8def)';
@@ -59,7 +84,7 @@ VIEWS.editor = () => {
       termHeight = Math.max(100, Math.min(window.innerHeight * 0.75, startH + (startY - ev.clientY)));
       termPane.style.height = termHeight + 'px';
       termPane.style.flexBasis = termHeight + 'px';
-      try { fitAddon?.fit(); editor?.layout(); } catch {}
+      try { activeTermSession()?.fitAddon.fit(); editor?.layout(); } catch {}
     };
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
@@ -80,6 +105,10 @@ VIEWS.editor = () => {
   mount(wrap, { full: true });
 
   /* ── Tombol di bilah atas ── */
+  // Cuma kelihatan di layar sempit (lihat app.css) — di desktop file tree
+  // memang selalu tampil, tidak perlu tombol buka/tutup.
+  const bFiles = addAction('Files', 'folder', () => side.classList.toggle('open'));
+  bFiles.classList.add('ed-side-toggle');
   const bSave = addAction('Save', 'edit', () => saveActive(), 'btn pri');
   addAction('New file', 'plus', () => newFile());
   const bTerm = addAction('Terminal', 'term', () => toggleTerm());
@@ -425,6 +454,8 @@ VIEWS.editor = () => {
   };
 
   async function openFile(p2) {
+    // Di layar sempit file tree menutupi editor — tutup begitu file dipilih.
+    side.classList.remove('open');
     if (autoMode !== 'off' && active) await saveTab(active, { quiet: true });
     const found = open.find(t => t.path === p2 && t.root === root);
     if (found) { active = found; showActive(); renderTabs(); renderTree(); return; }
@@ -592,37 +623,86 @@ VIEWS.editor = () => {
     }, 400);
   };
 
-  /* ── Terminal terpadu ── */
+  /* ── Terminal terpadu — bisa lebih dari satu sesi sekaligus ── */
   function toggleTerm() {
     termOpen = !termOpen;
-    termPane.style.display = termOpen ? 'block' : 'none';
+    termPane.style.display = termOpen ? 'flex' : 'none';
     termResize.style.display = termOpen ? 'block' : 'none';
     bTerm.classList.toggle('pri', termOpen);
-    if (termOpen && !term) startTerm();
-    setTimeout(() => { editor?.layout(); try { fitAddon?.fit(); } catch {} }, 60);
+    if (termOpen && !termSessions.length) addTerminal();
+    setTimeout(() => { editor?.layout(); try { activeTermSession()?.fitAddon.fit(); } catch {} }, 60);
   }
 
-  function startTerm() {
+  function addTerminal() {
     if (!window.Terminal) { toast('Terminal component is still loading'); return; }
-    term = new Terminal({ fontSize: 12, fontFamily: 'ui-monospace,Menlo,monospace',
+    const id = ++termSeq;
+    const box = el('div', { style: 'position:absolute;inset:0;padding:5px;display:none' });
+    termBody.append(box);
+    const term = new Terminal({ fontSize: 12, fontFamily: 'ui-monospace,Menlo,monospace',
       cursorBlink: true, scrollback: 3000,
       theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
-    fitAddon = new FitAddon.FitAddon();
+    const fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-    term.open(termPane);
-    setTimeout(() => { try { fitAddon.fit(); } catch {} }, 60);
+    term.open(box);
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     // Samain posisi terminal sama folder project yang lagi dibuka — kayak
     // VS Code, buka folder "backend" -> terminal langsung di situ.
     const HOST_PREFIX = { data: '/srv/data', stacks: '/srv/stacks', host: '' };
     const cwdParam = ws ? `?cwd=${encodeURIComponent((HOST_PREFIX[ws.root] ?? '') + '/' + (ws.path || ''))}` : '';
-    sock = new WebSocket(`${proto}://${location.host}/ws/term${cwdParam}`);
+    const sock = new WebSocket(`${proto}://${location.host}/ws/term${cwdParam}`);
     sock.binaryType = 'arraybuffer';
     sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
     sock.onclose = () => term.write('\r\n\x1b[90m— session ended —\x1b[0m\r\n');
     term.onData(d => sock.readyState === 1 && sock.send(d));
     term.onResize(({ rows, cols }) => sock.readyState === 1 && sock.send(`\x00resize:${rows},${cols}`));
+    termSessions.push({ id, term, sock, fitAddon, box });
     timers.push({ close: () => { sock?.close(); term?.dispose(); } });
+    setActiveTerm(id);
+  }
+
+  function closeTerminal(id) {
+    const idx = termSessions.findIndex(s => s.id === id);
+    if (idx < 0) return;
+    const s = termSessions[idx];
+    try { s.sock.close(); } catch {}
+    try { s.term.dispose(); } catch {}
+    s.box.remove();
+    termSessions.splice(idx, 1);
+    if (activeTermId === id) {
+      const next = termSessions[idx] || termSessions[idx - 1];
+      setActiveTerm(next ? next.id : null);
+    } else renderTermTabs();
+    if (!termSessions.length) {
+      termOpen = false; termPane.style.display = 'none';
+      termResize.style.display = 'none'; bTerm.classList.remove('pri');
+    }
+  }
+
+  function setActiveTerm(id) {
+    activeTermId = id;
+    termSessions.forEach(s => { s.box.style.display = s.id === id ? 'block' : 'none'; });
+    renderTermTabs();
+    const s = activeTermSession();
+    if (s) setTimeout(() => { try { s.fitAddon.fit(); s.term.focus(); } catch {} }, 30);
+  }
+
+  function renderTermTabs() {
+    const tabs = termSessions.map((s, i) => {
+      const on = s.id === activeTermId;
+      const tab = el('div', { style: 'display:flex;align-items:center;gap:6px;padding:0 6px 0 10px;'
+        + `height:24px;border-radius:4px;cursor:pointer;font-size:11px;white-space:nowrap;`
+        + `color:${on ? '#fff' : '#9aa0ac'};background:${on ? '#22252b' : 'transparent'}` },
+        `Terminal ${i + 1}`);
+      tab.onclick = () => setActiveTerm(s.id);
+      const close = el('span', { title: 'Tutup', style: 'opacity:.65;padding:2px 4px;line-height:1;'
+        + 'border-radius:3px' }, '×');
+      close.onmouseenter = () => close.style.background = '#3a3d44';
+      close.onmouseleave = () => close.style.background = '';
+      close.onclick = (e) => { e.stopPropagation(); closeTerminal(s.id); };
+      tab.append(close);
+      return tab;
+    });
+    termTabBar.replaceChildren(...tabs, termAddBtn);
   }
 
   /* ── Muat Monaco lalu bangun editor ── */

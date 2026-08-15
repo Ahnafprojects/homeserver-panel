@@ -20,12 +20,17 @@ ABSOLUTE RULES:
 - You discuss ONLY this server: performance, containers, deployments, logs, disk,
   memory, temperature, server networking, databases, backups, server security,
   and configuration.
-- If asked about anything else (politics, public figures, news, general trivia,
-  recipes, general knowledge, or anything unrelated to this server), reply EXACTLY:
+- A plain greeting ("hi", "halo", "hello", "thanks") or a question about what you
+  can help with is NOT off-topic — reply warmly and briefly invite a question
+  about the server (e.g. suggest checking status, containers, or logs).
+- If asked about something genuinely unrelated to this server (politics, public
+  figures, news, general trivia, recipes, general knowledge), reply EXACTLY:
   "Sorry, I can only help with this server." and stop. Do not answer partially.
   Do not give a long explanation.
 - Always call the available tools to fetch real data before drawing conclusions.
-  Never invent numbers.
+  Never invent numbers or file contents. Call tools using the real function-calling
+  mechanism only — never write out something like "<function=name>...</function>"
+  as plain text in your reply.
 - Answer in English, concise and specific. Use short bullets when helpful.
 - Remember the hardware limits: a 2010-era CPU, so slow builds are normal, and a
   10/100 LAN caps transfers at roughly 12 MB/s.
@@ -74,6 +79,14 @@ const TOOLS = [
       reason: { type: 'string', description: 'Why this is needed' },
       risk: { type: 'string', description: 'What could be disrupted' } } } } },
 ];
+
+// llama-3.3 on Groq occasionally leaks a pseudo tool-call as plain text
+// (e.g. "<function=list_containers></function>") instead of using the real
+// tool_calls field. That never actually runs the tool — it's just garbage
+// text — so strip it before it reaches the user.
+function stripLeakedToolSyntax(text) {
+  return String(text || '').replace(/<function=[^>]*>[\s\S]*?<\/function>/g, '').trim();
+}
 
 async function runTool(name, args, ctx) {
   try {
@@ -137,7 +150,7 @@ async function runTool(name, args, ctx) {
     }
     if (name === 'propose_fix') {
       // Hanya dicatat sebagai usulan; eksekusi menunggu klik pengguna.
-      ctx.proposals.push({ id: Math.random().toString(36).slice(2, 8), ...args });
+      ctx.proposals.push({ id: Math.random().toString(36).slice(2, 8), kind: 'fix', ...args });
       return { status: 'proposed_awaiting_approval', ...args };
     }
     return { error: 'Unknown tool' };
@@ -181,25 +194,37 @@ export async function chat({ apiKey, messages, history = [] }) {
 
   // Maksimum 5 putaran alat supaya tidak berputar tanpa henti.
   for (let round = 0; round < 5; round++) {
-    const r = await fetch(API, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, messages: convo, tools: TOOLS,
-        tool_choice: 'auto', temperature: 0.2, max_tokens: 1400 }),
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!r.ok) {
+    let data;
+    // llama-3.3 di Groq kadang menghasilkan pemanggilan tool yang cacat
+    // formatnya (nama fungsi & argumen digabung jadi satu string), yang
+    // ditolak Groq sendiri dengan error tool_use_failed. Ini glitch generasi
+    // yang acak — coba ulang sekali sebelum menyerah, daripada langsung
+    // menampilkan JSON error mentah ke pengguna.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(API, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: MODEL, messages: convo, tools: TOOLS,
+          tool_choice: 'auto', temperature: 0.2, max_tokens: 1400 }),
+        signal: AbortSignal.timeout(60000),
+      });
+      if (r.ok) { data = await r.json(); break; }
       const t = await r.text();
+      const malformed = /tool_use_failed/i.test(t);
+      if (malformed && attempt === 0) continue; // satu kali lagi
+      if (malformed) {
+        return { reply: 'The model got confused calling a tool just now. Try rephrasing '
+          + 'the question, or ask again.', proposals: ctx.proposals, used: [] };
+      }
       throw new Error(`Groq rejected the request (${r.status}): ${t.slice(0, 300)}`);
     }
-    const data = await r.json();
     const msg = data.choices?.[0]?.message;
     if (!msg) throw new Error('Empty response from Groq');
     convo.push(msg);
 
     const calls = msg.tool_calls || [];
     if (!calls.length) {
-      return { reply: msg.content || '', proposals: ctx.proposals,
+      return { reply: stripLeakedToolSyntax(msg.content) || '', proposals: ctx.proposals,
         used: convo.filter(m => m.role === 'tool').map(m => m.name) };
     }
     for (const call of calls) {

@@ -19,7 +19,10 @@ services:
       - /srv/data:/data                  # your files
       - /srv/panel-state:/state          # users, events, settings
       - /srv/stacks:/stacks              # deployed apps
-      - /srv/backup:/backup              # backups
+      # HDD eksternal (sama yang dipakai server-backup.timer) — bukan disk
+      # internal, biar backup manual dari panel juga selamat kalau SSD utama
+      # rusak.
+      - /mnt/backup/panel-backups:/backup
       - /srv/caddy:/caddy                # generated Caddyfile
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro

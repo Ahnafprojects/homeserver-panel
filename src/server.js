@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage } from './docker.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
+import * as autodeploy from './autodeploy.js';
 import * as admin from './admin.js';
 import * as ev from './events.js';
 import * as ai from './ai.js';
 import * as proxy from './proxy.js';
+import * as tunnel from './tunnel.js';
 import * as dbaas from './dbaas.js';
+import * as dbapi from './dbapi.js';
 import { WebSocketServer } from 'ws';
 import * as sys from './system.js';
 
@@ -85,13 +88,39 @@ const HISTORY_MAX = 2880; // 4 jam pada interval 5 detik
 const history = [];
 const HIST_FILE = path.join(STATE_DIR, 'history.json');
 
+// Data 5 detik-an cuma masuk akal buat beberapa jam terakhir — nyimpen itu
+// terus-terusan buat setahun berarti jutaan baris. Jadi tiap jam, sample-nya
+// dirata-ratakan jadi SATU titik dan disimpan di sini secara terpisah, tahan
+// lama (~2 tahun), buat filter grafik "hari/bulan/tahun".
+const HOURLY_MAX = 24 * 730; // ~2 tahun
+const hourlyHistory = [];
+const HOURLY_FILE = path.join(STATE_DIR, 'history-hourly.json');
+let hourBucket = null; // { hourStart, samples: [...] }
+
 try {
   fsSync.mkdirSync(STATE_DIR, { recursive: true });
   if (fsSync.existsSync(HIST_FILE)) {
     const old = JSON.parse(fsSync.readFileSync(HIST_FILE, 'utf8'));
     if (Array.isArray(old)) history.push(...old.slice(-HISTORY_MAX));
   }
+  if (fsSync.existsSync(HOURLY_FILE)) {
+    const old = JSON.parse(fsSync.readFileSync(HOURLY_FILE, 'utf8'));
+    if (Array.isArray(old)) hourlyHistory.push(...old.slice(-HOURLY_MAX));
+  }
 } catch {}
+
+function rollupHour() {
+  if (!hourBucket || !hourBucket.samples.length) return;
+  const s = hourBucket.samples;
+  const avg = (k) => +(s.reduce((a, p) => a + (p[k] ?? 0), 0) / s.length).toFixed(1);
+  const temps = s.map(p => p.tp).filter(v => v != null);
+  hourlyHistory.push({
+    t: hourBucket.hourStart, c: avg('c'), m: avg('m'), d: avg('d'),
+    tp: temps.length ? +(temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(1) : null,
+    rx: Math.round(avg('rx')), tx: Math.round(avg('tx')),
+  });
+  if (hourlyHistory.length > HOURLY_MAX) hourlyHistory.splice(0, hourlyHistory.length - HOURLY_MAX);
+}
 
 let lastStats = null;
 const ALERT_STATE = {};
@@ -100,7 +129,7 @@ async function collect() {
   try {
     const s = await sys.snapshot();
     lastStats = s;
-    history.push({
+    const point = {
       t: s.at,
       c: s.cpu.percent,
       m: s.memory.percent,
@@ -108,8 +137,16 @@ async function collect() {
       tp: s.temperature,
       rx: Math.round(s.network.rxRate),
       tx: Math.round(s.network.txRate),
-    });
+    };
+    history.push(point);
     if (history.length > HISTORY_MAX) history.splice(0, history.length - HISTORY_MAX);
+
+    const hourStart = Math.floor(point.t / 3600000) * 3600000;
+    if (!hourBucket || hourBucket.hourStart !== hourStart) {
+      rollupHour();
+      hourBucket = { hourStart, samples: [] };
+    }
+    hourBucket.samples.push(point);
 
     // Peringatan hanya saat kondisi BERUBAH, bukan tiap siklus —
     // supaya tidak membanjiri notifikasi lalu diabaikan.
@@ -134,6 +171,7 @@ setInterval(collect, 5000);
 collect();
 setInterval(() => {
   fs.writeFile(HIST_FILE, JSON.stringify(history.slice(-HISTORY_MAX))).catch(() => {});
+  fs.writeFile(HOURLY_FILE, JSON.stringify(hourlyHistory.slice(-HOURLY_MAX))).catch(() => {});
 }, 60000);
 
 // ── Pemantauan layanan ──────────────────────────────────────────────────────
@@ -174,6 +212,31 @@ function uptimeWindow(hist, ms) {
     incidents: h.reduce((n, x, i) => n + (!x.up && (i === 0 || h[i - 1].up) ? 1 : 0), 0) };
 }
 
+// Tebakan penyebab dari pesan error mentah, buat notifikasi yang langsung
+// kasih arah "harus ngapain" — bukan cuma bilang "down" doang.
+function diagnoseCheckError(err) {
+  const e = String(err || '').toLowerCase();
+  if (e.includes('enotfound') || e.includes('getaddrinfo'))
+    return 'DNS gagal — domain/hostname-nya tidak bisa ditemukan. Cek nama domain sudah benar dan DNS-nya aktif.';
+  if (e.includes('econnrefused'))
+    return 'Koneksi ditolak — kemungkinan service/container-nya mati atau port-nya salah. Cek statusnya di menu Containers.';
+  if (e.includes('timeout'))
+    return 'Tidak ada balasan sampai waktu habis — service mungkin macet, overload, atau ada firewall yang memblokir.';
+  if (e.includes('econnreset'))
+    return 'Koneksi terputus di tengah jalan — service kemungkinan crash saat sedang merespons. Cek log container-nya.';
+  if (/^http 5\d\d/.test(e))
+    return 'Server merespons tapi error di sisi aplikasi (' + err + '). Cek log container-nya.';
+  if (e.includes('cert') || e.includes('ssl') || e.includes('tls'))
+    return 'Masalah sertifikat HTTPS — mungkin kedaluwarsa atau salah domain.';
+  return 'Cek log container/service terkait buat lihat penyebab persisnya.';
+}
+const fmtOutage = (ms) => {
+  const m = Math.round(ms / 60000);
+  if (m < 1) return 'kurang dari 1 menit';
+  if (m < 60) return `${m} menit`;
+  return `${(m / 60).toFixed(1)} jam`;
+};
+
 async function runChecks() {
   for (const c of checks) {
     const r = await probe(c);
@@ -184,9 +247,17 @@ async function runChecks() {
     else if (c.downSince) { c.lastOutage = { from: c.downSince, to: c.at }; c.downSince = null; }
     const wasUp = c.up !== false;
     if (r.up !== wasUp) {
-      ev.emit(r.up ? 'uptime.up' : 'uptime.down',
-        `<code>${c.name}</code> ${r.up ? 'kembali normal' : 'tidak merespons'}.`
-        + (r.err ? ` ${r.err}` : ''), { key: c.name });
+      const target = c.type === 'tcp' ? `${c.host}:${c.port}` : c.url;
+      const msg = r.up
+        ? `<b>${c.name}</b> sudah normal lagi.\n`
+          + `Target: <code>${target}</code>\n`
+          + `Sempat down: ${fmtOutage(c.at - (c.downSince || c.at))}\n`
+          + `Waktu respons sekarang: ${r.ms} ms`
+        : `<b>${c.name}</b> tidak merespons.\n`
+          + `Target: <code>${target}</code>\n`
+          + `Error: <code>${esc(r.err || 'tidak diketahui')}</code>\n\n`
+          + `Diagnosis: ${diagnoseCheckError(r.err)}`;
+      ev.emit(r.up ? 'uptime.up' : 'uptime.down', msg, { key: c.name });
     }
     if (r.up && r.ms > THRESHOLDS.slowMs) {
       ev.emit('uptime.slow', `<code>${c.name}</code> merespons dalam ${r.ms} ms.`, { key: c.name });
@@ -331,6 +402,33 @@ async function dbQuery(cfg, sql, params = []) {
     fields: (fields || []).map((f) => f.name), count: Array.isArray(rows) ? rows.length : 0 };
 }
 
+// Dipanggil di background pas basis data Postgres baru dibuat — biar user
+// langsung dapet REST API tanpa perlu klik "Buat REST API" manual (persis
+// alur Supabase: bikin project, langsung dapet URL + key). Jalan async,
+// TIDAK di-await di endpoint create supaya response-nya tetap cepat; kalau
+// gagal (mis. Postgres belum sempat siap), tombol manual di drawer Koneksi
+// masih bisa dipakai sebagai fallback.
+async function autoDeployRestApi(inst) {
+  try {
+    const cfg = dbaas.credentials(inst.id);
+    let ready = false;
+    for (let i = 0; i < 20; i++) {
+      try { await dbQuery(cfg, 'SELECT 1'); ready = true; break; }
+      catch { await new Promise((r) => setTimeout(r, 1000)); }
+    }
+    if (!ready) return;
+    const rec = await dbapi.deploy(inst.id, dbQuery);
+    const site = tunnel.addSite({ label: 'api', project: inst.name,
+      target: rec.container, port: rec.port, proto: 'http' });
+    const dns = await tunnel.routeDns(site.hostname);
+    const apply = await tunnel.applyConfig();
+    if (dns.ok && apply.ok) {
+      ev.emit('domain.added',
+        `REST API <code>${site.hostname}</code> otomatis dibuat untuk basis data <code>${inst.name}</code>.`);
+    }
+  } catch {}
+}
+
 const idq = (kind) => (s2) => {
   const c = String(s2).replace(/[^A-Za-z0-9_]/g, '');
   if (!c) throw new Error('Invalid column or table name');
@@ -342,6 +440,15 @@ const qualify = (b) => `${idq(b.kind)(b.schema)}.${idq(b.kind)(b.table)}`;
 const THRESHOLDS = { disk: 85, memory: 90, cpu: 92, temp: 80, swap: 60, slowMs: 3000 };
 try { Object.assign(THRESHOLDS,
   JSON.parse(fsSync.readFileSync(path.join(STATE_DIR, 'thresholds.json'), 'utf8'))); } catch {}
+
+// Link publik per-container (mis. domain lewat Cloudflare Tunnel) — diisi
+// manual karena panel tidak tahu rute macam ini secara otomatis (beda dari
+// domain Caddy yang tercatat di sites.json).
+let CONTAINER_LINKS = {};
+try { CONTAINER_LINKS = JSON.parse(
+  fsSync.readFileSync(path.join(STATE_DIR, 'container-links.json'), 'utf8')); } catch {}
+const saveContainerLinks = () => fs.writeFile(path.join(STATE_DIR, 'container-links.json'),
+  JSON.stringify(CONTAINER_LINKS)).catch(() => {});
 
 const LIST_TABLES = {
   postgres: `SELECT table_schema AS schema, table_name AS name
@@ -455,6 +562,21 @@ const server = http.createServer(async (req, res) => {
       // Semua rute lain wajib punya sesi.
       if (!OPEN.has(p) && !ses) return fail(res, 'Not signed in', 401);
 
+      // Verifikasi ulang kata sandi akun yang sedang login — dipakai buat
+      // "kunci" ringan di UI (mis. menampilkan container sistem yang
+      // disembunyikan), bukan pengganti login penuh.
+      if (p === '/api/auth/verify' && req.method === 'POST') {
+        const ip = ipOf(req);
+        const rate = auth.checkRate(ip);
+        if (!rate.allowed) return fail(res, `Too many attempts. Try again in ${rate.retryIn} seconds.`, 429);
+        const b = await readJson(req);
+        const u = auth.findUser(ses.username);
+        const good = !!u && auth.verifyPassword(b.password || '', u.pass);
+        if (!good) { auth.noteFail(ip); return fail(res, 'Wrong password', 401); }
+        auth.noteOk(ip);
+        return ok(res);
+      }
+
       // Penjaga izin: tiap kelompok rute dipetakan ke satu halaman.
       // Anggota tim hanya bisa menyentuh yang diizinkan admin.
       const AREA = [
@@ -491,7 +613,7 @@ const server = http.createServer(async (req, res) => {
       ];
       const isQuery = /^\/api\/db\/instances\/[^/]+\/query$/.test(p);
       if (ses && !auth.canWrite(ses) && req.method !== 'GET'
-          && !['/api/auth/logout', '/api/auth/state'].includes(p)) {
+          && !['/api/auth/logout', '/api/auth/state', '/api/auth/verify'].includes(p)) {
         let allow = req.method === 'POST' && READ_POST.some(re => re.test(p));
         // Viewer boleh menjalankan kueri, tetapi hanya yang membaca.
         // Penyaringnya sengaja ketat: satu kata kunci pengubah saja langsung ditolak.
@@ -517,8 +639,22 @@ const server = http.createServer(async (req, res) => {
         return ok(res, lastStats || (await sys.snapshot()));
       }
       if (p === '/api/system/history') {
+        const RANGE_MS = { '30m': 1.8e6, '1h': 3.6e6, '4h': 1.44e7, '1d': 8.64e7,
+          '7d': 6.048e8, '30d': 2.592e9, '90d': 7.776e9, '1y': 3.1536e10 };
+        const range = q.get('range');
+        const from = +q.get('from') || null;
+        const to = +q.get('to') || Date.now();
+        if (range || from) {
+          const spanMs = from ? (to - from) : RANGE_MS[range];
+          if (!spanMs) return fail(res, 'Invalid range', 400);
+          const since = from || (Date.now() - spanMs);
+          // Data 5-detikan cuma ada buat beberapa jam terakhir; rentang lebih
+          // panjang dari itu otomatis pakai ringkasan per-jam yang tahan lama.
+          const src = spanMs <= 4 * 3600000 ? history : hourlyHistory;
+          return ok(res, { points: src.filter(p2 => p2.t >= since && p2.t <= to), resolution: src === history ? '5s' : '1h' });
+        }
         const n = Math.min(+q.get('n') || 360, HISTORY_MAX);
-        return ok(res, { points: history.slice(-n) });
+        return ok(res, { points: history.slice(-n), resolution: '5s' });
       }
       if (p === '/api/system/info') {
         const [info, ver] = await Promise.all([
@@ -598,6 +734,7 @@ const server = http.createServer(async (req, res) => {
           const inst = await dbaas.create(b);
           auth.audit(ses.username, 'db-instance-buat', `${b.engine} ${b.name}`);
           ev.emit('db.backup_ok', `Basis data <code>${inst.name}</code> (${b.engine}) dibuat.`);
+          if (b.engine === 'postgres') autoDeployRestApi(inst);
           return ok(res, inst);
         }
       }
@@ -631,6 +768,49 @@ const server = http.createServer(async (req, res) => {
           return fail(res, r.out || 'Gagal'); }
         ev.emit('db.backup_ok', `Cadangan <code>${path.basename(r.file)}</code> dibuat.`);
         return ok(res, { file: path.basename(r.file) });
+      }
+
+      // ---- REST API otomatis di depan basis data (setara Supabase) ----
+      if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/api$/))) {
+        if (!auth.canDb(ses, m[1])) return fail(res, 'No access to this database', 403);
+        const existing = dbapi.forInstance(m[1]);
+        if (req.method === 'GET') {
+          if (!existing) return ok(res, null);
+          const site = tunnel.listSites().find(s => s.target === existing.container);
+          return ok(res, { name: existing.name, port: existing.port,
+            apiKey: existing.apiKey, hostname: site?.hostname || null });
+        }
+        if (req.method === 'POST') {
+          if (existing) return fail(res, 'API sudah dibuat untuk basis data ini', 400);
+          let rec;
+          try { rec = await dbapi.deploy(m[1], dbQuery); }
+          catch (e) { return fail(res, e.message, 400); }
+          const inst = dbaas.getInstance(m[1]);
+          let hostname = null, warning;
+          try {
+            const site = tunnel.addSite({ label: 'api', project: inst.name,
+              target: rec.container, port: rec.port, proto: 'http' });
+            const dns = await tunnel.routeDns(site.hostname);
+            const apply = await tunnel.applyConfig();
+            hostname = site.hostname;
+            if (!dns.ok) warning = 'Gagal daftar DNS: ' + dns.message;
+            else if (!apply.ok) warning = 'Gagal muat ulang cloudflared: ' + apply.message;
+          } catch (e) { warning = e.message; }
+          auth.audit(ses.username, 'db-api-buat', inst.name);
+          ev.emit('domain.added', hostname
+            ? `REST API <code>${hostname}</code> dibuat untuk basis data <code>${inst.name}</code>.`
+            : `REST API dibuat untuk <code>${inst.name}</code> (subdomain gagal: ${warning || ''}).`);
+          return ok(res, { name: rec.name, port: rec.port, apiKey: rec.apiKey, hostname, warning });
+        }
+        if (req.method === 'DELETE') {
+          if (existing) {
+            const site = tunnel.listSites().find(s => s.target === existing.container);
+            if (site) { tunnel.removeSite(site.id); await tunnel.applyConfig(); }
+          }
+          await dbapi.remove(m[1], dbQuery);
+          auth.audit(ses.username, 'db-api-hapus', m[1]);
+          return ok(res);
+        }
       }
 
       // Jalankan kueri memakai kredensial instance (frontend tidak pegang sandi).
@@ -957,6 +1137,32 @@ const server = http.createServer(async (req, res) => {
         return ok(res, r);
       }
 
+      // ---- Subdomain lewat Cloudflare Tunnel (tanpa port 80/443 terbuka) ----
+      if (p === '/api/tunnel/sites') {
+        if (req.method === 'GET') {
+          return ok(res, { sites: tunnel.listSites(), baseDomain: tunnel.baseDomain() });
+        }
+        if (req.method === 'POST') {
+          const b = await readJson(req);
+          let site;
+          try { site = tunnel.addSite(b); } catch (e) { return fail(res, e.message, 400); }
+          const dns = await tunnel.routeDns(site.hostname);
+          const apply = await tunnel.applyConfig();
+          if (!dns.ok) auth.audit(ses.username, 'tunnel-tambah-gagal', site.hostname);
+          else auth.audit(ses.username, 'tunnel-tambah', site.hostname);
+          if (dns.ok) ev.emit('domain.added', `<code>${site.hostname}</code> diarahkan lewat Cloudflare Tunnel ke ${site.target}:${site.port}.`);
+          return ok(res, { site, dns, apply,
+            warning: !dns.ok ? 'Gagal daftar DNS: ' + dns.message
+              : !apply.ok ? 'Gagal muat ulang cloudflared: ' + apply.message : undefined });
+        }
+      }
+      if ((m = p.match(/^\/api\/tunnel\/sites\/([^/]+)$/)) && req.method === 'DELETE') {
+        tunnel.removeSite(m[1]);
+        const apply = await tunnel.applyConfig();
+        auth.audit(ses.username, 'tunnel-hapus', m[1]);
+        return ok(res, apply);
+      }
+
       // ---- Basis data: ubah data & ekspor ----
       if (p === '/api/db/columns' && req.method === 'POST') {
         const b = await readJson(req);
@@ -1264,9 +1470,18 @@ const server = http.createServer(async (req, res) => {
             current: await stacks.gitCurrent(name), log: await stacks.gitLog(name) });
         }
       }
+      // Deteksi jenis project (Next.js/Vite/CRA/Node/statis) buat "Deploy
+      // otomatis" — dipanggil SETELAH repo di-clone, SEBELUM benar-benar
+      // deploy, supaya pengguna bisa lihat & konfirmasi dulu (port, env var)
+      // daripada langsung jalan buta.
+      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/detect$/)) && req.method === 'GET') {
+        const det = await autodeploy.detect(stacks.dirOf(m[1]));
+        const port = await autodeploy.findFreePort();
+        return ok(res, { ...det, suggestedPort: port });
+      }
 
       // Aksi panjang memakai SSE supaya log build terlihat saat berjalan.
-      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout)$/))) {
+      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout|autodeploy)$/))) {
         const [, name, action] = m;
         res.writeHead(200, { 'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -1279,6 +1494,51 @@ const server = http.createServer(async (req, res) => {
             auth.audit(ses.username, 'deploy', name + ' code=' + c);
             ev.emit(c === 0 ? 'deploy.success' : 'deploy.failed',
               `Stack <code>${name}</code>${c === 0 ? ' berhasil di-deploy.' : ` gagal (kode ${c}).`}`, { key: name });
+            return done(c);
+          }
+          if (action === 'autodeploy') {
+            const port = +q.get('port');
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+              send('ERROR: Port tidak valid'); return done(1);
+            }
+            let envVars = {};
+            try { envVars = JSON.parse(q.get('env') || '{}'); } catch {}
+            send('$ mendeteksi jenis project…');
+            const det = await autodeploy.scaffold(stacks.dirOf(name), name, { port, envVars });
+            send(`$ terdeteksi: ${det.label} — Dockerfile & docker-compose.yml dibuat otomatis`);
+            send('$ docker compose up -d --build');
+            const c = await stacks.deploy(name, send);
+            auth.audit(ses.username, 'autodeploy', `${name} (${det.type}) code=${c}`);
+            ev.emit(c === 0 ? 'deploy.success' : 'deploy.failed',
+              `Stack <code>${name}</code> (deploy otomatis, ${det.label})${c === 0 ? ' berhasil.' : ` gagal (kode ${c}).`}`, { key: name });
+
+            // Sekalian bikinkan subdomain publik lewat Cloudflare Tunnel —
+            // ini tujuan utama "deploy otomatis": nggak ada langkah manual
+            // tambahan buat bikin situsnya bisa diakses dari luar.
+            if (c === 0) {
+              try {
+                const { out } = await stacks.runP('docker', ['compose', 'ps', '--format', 'json'],
+                  { cwd: stacks.dirOf(name) });
+                const containerName = out.split('\n').filter(Boolean)
+                  .map(l => { try { return JSON.parse(l).Name; } catch { return null; } }).find(Boolean);
+                // Selalu disarangkan di bawah nama project (app.<nama-stack>.domain),
+                // bukan langsung di bawah domain utama — biar tidak semua
+                // service yang di-deploy kelihatan rata di satu tingkat.
+                const project = name.replace(/[^a-z0-9-]/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
+                send(`$ mendaftarkan subdomain ${project}-app.${tunnel.baseDomain()}…`);
+                const site = tunnel.addSite({ label: 'app', target: containerName || name, port, project });
+                const dns = await tunnel.routeDns(site.hostname);
+                const apply = await tunnel.applyConfig();
+                if (dns.ok && apply.ok) {
+                  send(`$ situs bisa diakses di https://${site.hostname}`);
+                  if (containerName) { CONTAINER_LINKS[containerName] = `https://${site.hostname}`; saveContainerLinks(); }
+                  ev.emit('domain.added', `<code>${site.hostname}</code> diarahkan ke stack <code>${name}</code>.`);
+                } else {
+                  send(`$ (subdomain gagal didaftarkan otomatis: ${dns.message || apply.message} — `
+                    + 'bisa dibikin manual lewat halaman Stacks)');
+                }
+              } catch (e) { send('$ (gagal setup subdomain otomatis: ' + e.message + ')'); }
+            }
             return done(c);
           }
           if (action === 'stop') { send('$ docker compose down');
@@ -1385,13 +1645,17 @@ const server = http.createServer(async (req, res) => {
             try { const s = await docker.statsOnce(c.Id);
               cpu = cpuPercent(s); mem = memUsage(s); } catch {}
           }
+          const name = (c.Names?.[0] || '').replace(/^\//, '');
           return {
-            id: c.Id, name: (c.Names?.[0] || '').replace(/^\//, ''),
-            image: c.Image, state: c.State, status: c.Status,
+            id: c.Id, name, image: c.Image, state: c.State, status: c.Status,
             created: c.Created * 1000, cpu, mem,
             ports: (c.Ports || []).filter((x) => x.PublicPort)
               .map((x) => `${x.PublicPort}:${x.PrivatePort}`),
             compose: c.Labels?.['com.docker.compose.project'] || null,
+            // Container infrastruktur (panel itu sendiri, Caddy, Portainer) —
+            // disembunyikan bawaan di UI supaya tidak gampang ke-klik hapus/stop
+            // tanpa sadar.
+            system: name === 'panel' || name === 'caddy' || name === 'portainer',
           };
         }));
         out.sort((a, b) => (a.state === b.state ? a.name.localeCompare(b.name)
@@ -1411,6 +1675,22 @@ const server = http.createServer(async (req, res) => {
       }
       if ((m = p.match(/^\/api\/containers\/([^/]+)\/inspect$/))) {
         return ok(res, await docker.inspect(m[1]));
+      }
+      // Link publik manual per-container (nama container sebagai kunci, stabil
+      // lintas restart/recreate — beda dari ID yang berubah tiap recreate).
+      if ((m = p.match(/^\/api\/containers\/([^/]+)\/link$/))) {
+        const name = m[1];
+        if (req.method === 'GET') return ok(res, { url: CONTAINER_LINKS[name] || null });
+        if (req.method === 'POST') {
+          const b = await readJson(req);
+          const url = String(b.url || '').trim();
+          if (url && !/^https?:\/\/[^\s]+$/i.test(url)) {
+            return fail(res, 'URL must start with http:// or https://', 400);
+          }
+          if (url) CONTAINER_LINKS[name] = url; else delete CONTAINER_LINKS[name];
+          saveContainerLinks();
+          return ok(res, { url: CONTAINER_LINKS[name] || null });
+        }
       }
       if ((m = p.match(/^\/api\/containers\/([^/]+)\/logs$/))) {
         // Server-Sent Events: log mengalir langsung ke UI tanpa polling.
@@ -1771,8 +2051,19 @@ server.on('upgrade', async (req, socket, head) => {
     // env var (PANEL_CWD), bukan ditempel langsung ke command, supaya tidak
     // ada celah shell-injection dari nama folder yang aneh-aneh.
     const cwdReq = u.searchParams.get('cwd') || '';
+    // Terminal ini jalan sebagai root (lewat nsenter), jadi PATH bawaannya
+    // cuma binari sistem — tool yang di-install per-user (npm/pip/pipx
+    // --user, misalnya CLI seperti claude/codex) taruh di ~/.local/bin milik
+    // user itu, bukan kebaca root. Tambahkan semua folder itu ke PATH dulu.
     const sh = spawn('script', ['-qc',
-      'nsenter -t 1 -m -u -n -i -- sh -c \'[ -n "$PANEL_CWD" ] && cd "$PANEL_CWD" 2>/dev/null; exec sh -l\'',
+      'nsenter -t 1 -m -u -n -i -- sh -c \''
+      + 'for d in /home/*/.local/bin /root/.local/bin; do [ -d "$d" ] && PATH="$PATH:$d"; done; export PATH; '
+      + '[ -n "$PANEL_CWD" ] && cd "$PANEL_CWD" 2>/dev/null; '
+      // Prompt polos "# " tanpa nama folder bikin susah tahu 'cd' beneran
+      // pindah atau tidak. Pakai bash biar prompt-nya bisa nunjukin folder
+      // sekarang (\\w) dan ter-update tiap kali pindah folder.
+      + 'export PS1="\\w # "; '
+      + 'exec bash --norc --noprofile -i\'',
       '/dev/null'],
       { stdio: ['pipe', 'pipe', 'pipe'],
         // TERM wajib diset — tanpa ini perintah yang baca terminfo (clear,

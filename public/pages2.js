@@ -270,8 +270,10 @@ VIEWS.system = () => {
 
 /* ═══════════ Penjadwal ═══════════ */
 VIEWS.jobs = () => {
+  let all = [], q = '';
   const wrap = el('div');
-  mount(wrap);
+  const search = searchBox('Cari job…', v => { q = v; render(); });
+  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   liveBadge(15);
 
   addAction('Job baru', 'plus', () => form(), 'btn pri');
@@ -346,13 +348,23 @@ VIEWS.jobs = () => {
   }
 
   async function load() {
+    try { all = (await api('/jobs')).jobs; render(); }
+    catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
+  function render() {
     try {
-      const { jobs } = await api('/jobs');
-      if (!jobs.length) {
+      if (!all.length) {
         wrap.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'empty',
           html: ic('clock', 30, 1.3) + '<div>No scheduled jobs</div>' +
             '<div style="font-size:11.5px;margin-top:6px">Misalnya: backup harian, '
             + 'bersihkan image tiap minggu, restart container tiap pagi.</div>' })));
+        return;
+      }
+      const jobs = all.filter(jb => matches(q, jb.name, jb.type, jb.target));
+      if (!jobs.length) {
+        wrap.replaceChildren(el('div', { class: 'card' },
+          el('div', { class: 'empty', html: ic('search', 30, 1.3) + '<div>No matching jobs</div>' })));
         return;
       }
       const tb = el('tbody');
@@ -390,7 +402,7 @@ VIEWS.jobs = () => {
         el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Job'),
           el('th', {}, 'Schedule'), el('th', {}, 'Last run'), el('th', {}, 'Status'),
           el('th', {}, ''))), tb))));
-      $('#sub').textContent = `${jobs.filter(j2 => j2.enabled).length} active`;
+      $('#sub').textContent = `${all.filter(j2 => j2.enabled).length} active`;
     } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
   every(load, 15000);
@@ -398,7 +410,7 @@ VIEWS.jobs = () => {
 
 /* ═══════════ Brankas & Backup ═══════════ */
 VIEWS.vault = () => {
-  let secrets = [], backups = [], stacks = [];
+  let secrets = [], backups = [], stacks = [], qSecrets = '', qBackups = '';
   const T = tabs([
     { id: 'secrets', n: 'Secrets', i: 'lock' },
     { id: 'backups', n: 'Backup', i: 'disk' },
@@ -446,41 +458,53 @@ VIEWS.vault = () => {
         el('div', { class: 'row' }, b)));
     };
 
-    const tb = el('tbody', {}, ...secrets.map(s => {
-      const show = el('button', { class: 'ib', title: 'Reveal value', html: ic('search', 14) });
-      show.onclick = async () => {
-        try { const r = await api('/secrets/' + encodeURIComponent(s.name));
-          openDrawer(s.name, el('div', {},
-            el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:8px' },
-              'Revealing this value is recorded in the activity log.'),
-            el('div', { class: 'card' }, el('div', { class: 'card-b mono',
-              style: 'word-break:break-all;font-size:13px' }, r.value))));
-        } catch (e) { toast(e.message); }
-      };
-      const del = el('button', { class: 'ib', html: ic('trash', 14) });
-      del.onclick = async () => {
-        if (!confirm(`Hapus rahasia "${s.name}"?`)) return;
-        await api('/secrets/' + encodeURIComponent(s.name), { method: 'DELETE' });
-        toast('Deleted'); load();
-      };
-      return el('tr', {}, el('td', { class: 'mono' }, s.name),
-        el('td', { class: 'mono', style: 'color:var(--tx-3)' }, '••••••••••••'),
-        el('td', { style: 'color:var(--tx-3)' }, ago(s.updated)),
-        el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, show, del)));
-    }));
+    const countPill = el('span', { class: 'pill' }, `${secrets.length} rahasia`);
+    const listArea = el('div');
+    // Kotak cari & tombol dibangun sekali di sini; hanya listArea yang
+    // dibangun ulang tiap ketikan, supaya fokus di kotak cari tidak lepas.
+    const search = searchBox('Cari rahasia…', v => { qSecrets = v; paint(); });
+    search.querySelector('input').value = qSecrets;
 
-    body.replaceChildren(
-      el('div', { class: 'row', style: 'margin-bottom:12px' },
-        el('span', { class: 'pill' }, `${secrets.length} rahasia`),
-        el('span', { class: 'sp' }), inject, add),
-      secrets.length
+    function paint() {
+      const shown = secrets.filter(s => matches(qSecrets, s.name));
+      const tb = el('tbody', {}, ...shown.map(s => {
+        const show = el('button', { class: 'ib', title: 'Reveal value', html: ic('search', 14) });
+        show.onclick = async () => {
+          try { const r = await api('/secrets/' + encodeURIComponent(s.name));
+            openDrawer(s.name, el('div', {},
+              el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:8px' },
+                'Revealing this value is recorded in the activity log.'),
+              el('div', { class: 'card' }, el('div', { class: 'card-b mono',
+                style: 'word-break:break-all;font-size:13px' }, r.value))));
+          } catch (e) { toast(e.message); }
+        };
+        const del = el('button', { class: 'ib', html: ic('trash', 14) });
+        del.onclick = async () => {
+          if (!confirm(`Hapus rahasia "${s.name}"?`)) return;
+          await api('/secrets/' + encodeURIComponent(s.name), { method: 'DELETE' });
+          toast('Deleted'); load();
+        };
+        return el('tr', {}, el('td', { class: 'mono' }, s.name),
+          el('td', { class: 'mono', style: 'color:var(--tx-3)' }, '••••••••••••'),
+          el('td', { style: 'color:var(--tx-3)' }, ago(s.updated)),
+          el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, show, del)));
+      }));
+      listArea.replaceChildren(shown.length
         ? el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
             el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Name'),
               el('th', {}, 'Value'), el('th', {}, 'Updated'), el('th', {}, ''))), tb)))
         : el('div', { class: 'card' }, el('div', { class: 'empty',
-            html: ic('lock', 30, 1.3) + '<div>Vault is empty</div>' +
-              '<div style="font-size:11.5px;margin-top:6px">Simpan kata sandi database, '
-              + 'API key, dan token di sini — bukan di dalam files compose.</div>' })));
+            html: ic(secrets.length ? 'search' : 'lock', 30, 1.3)
+              + `<div>${secrets.length ? 'No matching secrets' : 'Vault is empty'}</div>` +
+              (secrets.length ? '' : '<div style="font-size:11.5px;margin-top:6px">Simpan kata sandi database, '
+              + 'API key, dan token di sini — bukan di dalam files compose.</div>') })));
+    }
+    paint();
+
+    body.replaceChildren(
+      el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
+        countPill, search, el('span', { class: 'sp' }), inject, add),
+      listArea);
   }
 
   /* ── Backup ── */
@@ -519,36 +543,45 @@ VIEWS.vault = () => {
     };
 
     const total = backups.reduce((a, b2) => a + b2.size, 0);
-    const tb = el('tbody', {}, ...backups.map(b2 => {
-      const dl = el('a', { class: 'ib', title: 'Download', html: ic('down', 14),
-        href: '/api/backups/download?name=' + encodeURIComponent(b2.name) });
-      const del = el('button', { class: 'ib', html: ic('trash', 14) });
-      del.onclick = async () => {
-        if (!confirm(`Hapus cadangan "${b2.name}"?`)) return;
-        await api('/backups/' + encodeURIComponent(b2.name), { method: 'DELETE' });
-        toast('Deleted'); load();
-      };
-      const rs = typeof restoreButton === 'function' ? restoreButton(b2, load) : '';
-      return el('tr', {}, el('td', { class: 'mono' }, b2.name),
-        el('td', { class: 'num' }, bytes(b2.size)),
-        el('td', { style: 'color:var(--tx-3)' }, ago(b2.at)),
-        el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, rs, dl, del)));
-    }));
+    const countPill = el('span', { class: 'pill' }, `${backups.length} files`);
+    const listArea = el('div');
+    const search = searchBox('Cari cadangan…', v => { qBackups = v; paint(); });
+    search.querySelector('input').value = qBackups;
 
-    body.replaceChildren(
-      el('div', { class: 'row', style: 'margin-bottom:12px' },
-        el('span', { class: 'pill' }, `${backups.length} files`),
-        el('span', { class: 'pill' }, bytes(total)),
-        el('span', { class: 'sp' }), mk),
-      backups.length
+    function paint() {
+      const shown = backups.filter(b2 => matches(qBackups, b2.name));
+      const tb = el('tbody', {}, ...shown.map(b2 => {
+        const dl = el('a', { class: 'ib', title: 'Download', html: ic('down', 14),
+          href: '/api/backups/download?name=' + encodeURIComponent(b2.name) });
+        const del = el('button', { class: 'ib', html: ic('trash', 14) });
+        del.onclick = async () => {
+          if (!confirm(`Hapus cadangan "${b2.name}"?`)) return;
+          await api('/backups/' + encodeURIComponent(b2.name), { method: 'DELETE' });
+          toast('Deleted'); load();
+        };
+        const rs = typeof restoreButton === 'function' ? restoreButton(b2, load) : '';
+        return el('tr', {}, el('td', { class: 'mono' }, b2.name),
+          el('td', { class: 'num' }, bytes(b2.size)),
+          el('td', { style: 'color:var(--tx-3)' }, ago(b2.at)),
+          el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, rs, dl, del)));
+      }));
+      listArea.replaceChildren(shown.length
         ? el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
             el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Files'),
               el('th', { class: 'num' }, 'Size'), el('th', {}, 'Dibuat'),
               el('th', {}, ''))), tb)))
         : el('div', { class: 'card' }, el('div', { class: 'empty',
-            html: ic('disk', 30, 1.3) + '<div>No backups yet</div>' +
-              '<div style="font-size:11.5px;margin-top:6px">Schedulekan otomatis lewat '
-              + 'menu Penjadwal agar tidak perlu diingat manual.</div>' })),
+            html: ic('disk', 30, 1.3) + `<div>${backups.length ? 'No matching backups' : 'No backups yet'}</div>` +
+              (backups.length ? '' : '<div style="font-size:11.5px;margin-top:6px">Schedulekan otomatis lewat '
+              + 'menu Penjadwal agar tidak perlu diingat manual.</div>') })));
+    }
+    paint();
+
+    body.replaceChildren(
+      el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
+        countPill, el('span', { class: 'pill' }, bytes(total)),
+        search, el('span', { class: 'sp' }), mk),
+      listArea,
       el('div', { class: 'note' + '', style: 'margin-top:16px;font-size:11.5px;color:var(--tx-2);'
         + 'background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px' },
         'Backups live on the same server. If that disk fails, '

@@ -89,7 +89,14 @@ export async function temperature() {
 }
 
 export async function network() {
-  const txt = await read(`${H}/net/dev`);
+  // Sengaja lewat /1/net/dev (proses PID 1 di host), BUKAN /net/dev
+  // langsung. /proc/net/dev itu symlink ke /proc/self/net/dev, dan "self"
+  // di-resolve berdasarkan namespace jaringan PROSES YANG BACA — karena
+  // container ini cuma share pid namespace host (bukan network namespace),
+  // /host/proc/net/dev tetap balik ke jaringan virtual container sendiri
+  // (cuma eth0 kecil), bukan wlan/eth host beneran. Baca via PID 1 (init
+  // host, pasti di root network namespace) buat dapet angka yang bener.
+  const txt = await read(`${H}/1/net/dev`);
   let rx = 0, tx = 0;
   for (const l of txt.split('\n').slice(2)) {
     const m = l.trim().split(/[\s:]+/);

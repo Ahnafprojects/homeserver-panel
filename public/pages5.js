@@ -3,10 +3,11 @@
    ubah baris, dan jalankan SQL — semuanya dari web. */
 
 VIEWS.database = () => {
-  let engines = [], list = [], external = [], sel = null;
+  let engines = [], list = [], external = [], sel = null, qText = '';
 
   const wrap = el('div');
-  mount(wrap);
+  const search = searchBox('Cari basis data…', v => { qText = v; renderList(); });
+  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   liveBadge(20);
   addAction('Sambungkan yang ada', 'net', () => formExternal());
   addAction('Basis data baru', 'plus', () => formCreate(), 'btn pri');
@@ -111,10 +112,17 @@ VIEWS.database = () => {
           + 'koneksinya ke aplikasi kamu.</div>' })));
       return;
     }
+    const shownExternal = external.filter(x => matches(qText, x.name, x.host));
+    const shownList = list.filter(i => matches(qText, i.name, i.engine));
+    if (!shownExternal.length && !shownList.length) {
+      wrap.replaceChildren(el('div', { class: 'card' },
+        el('div', { class: 'empty', html: ic('search', 30, 1.3) + '<div>No matching databases</div>' })));
+      return;
+    }
     const cards = el('div', { class: 'grid2' });
 
     // Sambungan ke basis data luar: tidak punya container, jadi kartunya lebih ringkas.
-    external.forEach(x => {
+    shownExternal.forEach(x => {
       const open = el('button', { class: 'btn pri', html: ic('search', 13) + '<span>Kelola</span>' });
       open.onclick = () => { sel = { ...x, external: true }; renderDetail(); };
       const del = el('button', { class: 'ib', title: 'Lepas sambungan', html: ic('trash', 14) });
@@ -141,7 +149,7 @@ VIEWS.database = () => {
       cards.append(card);
     });
 
-    list.forEach(i => {
+    shownList.forEach(i => {
       const on = i.state === 'running';
       const open = el('button', { class: 'btn pri', html: ic('search', 13) + '<span>Kelola</span>' });
       open.onclick = () => { sel = i; renderDetail(); };
@@ -221,15 +229,133 @@ VIEWS.database = () => {
           toast('Backup created: ' + r.file); } catch (e) { toast(e.message); }
       };
 
+      // ── Akses dari device lain (bukan sesama laptop ini) lewat Cloudflare
+      // Tunnel — buat kasus kayak "backend jalan di laptop teman". Ini beda
+      // dari SSH tunnel di atas: yang connect nggak perlu akun SSH di
+      // laptop ini, cukup domain + cloudflared di sisi mereka.
+      const remoteArea = el('div');
+      async function paintRemote() {
+        if (!c.exposePort) {
+          remoteArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3)' },
+            'Buat diakses dari device lain, basis data ini harus dibuat ulang dengan opsi '
+            + '"Open port ke localhost server" dicentang.'));
+          return;
+        }
+        const tData = await api('/tunnel/sites').catch(() => ({ sites: [], baseDomain: 'ahnaf.cloud' }));
+        const existing = tData.sites.find(s => s.target === i.container && s.proto === 'tcp');
+        if (existing) {
+          const cmd = `cloudflared access tcp --hostname ${existing.hostname} --url localhost:${c.exposePort}`;
+          const del = el('button', { class: 'btn', style: 'margin-top:8px' }, 'Cabut akses jarak jauh');
+          del.onclick = async () => {
+            if (!confirm('Cabut akses jarak jauh ke basis data ini?')) return;
+            try { await api('/tunnel/sites/' + existing.id, { method: 'DELETE' });
+              toast('Dicabut'); paintRemote(); } catch (e) { toast(e.message); }
+          };
+          remoteArea.replaceChildren(
+            el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:6px' },
+              `Suruh temanmu install `,
+              el('a', { href: 'https://developers.cloudflare.com/cloudflared/', target: '_blank' }, 'cloudflared'),
+              ' (gratis) di laptopnya, lalu jalankan perintah ini di terminal dia:'),
+            el('div', { class: 'card' }, el('div', { class: 'card-b mono',
+              style: 'font-size:11px;word-break:break-all' }, cmd)),
+            el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:6px' },
+              `Habis itu dia tinggal connect ke `,
+              el('code', {}, `127.0.0.1:${c.exposePort}`), ' pakai client database biasa (DBeaver/TablePlus/psql) — koneksinya lewat Cloudflare, terenkripsi, tanpa buka port apa pun ke internet.'),
+            del);
+        } else {
+          const add = el('button', { class: 'btn pri' }, 'Buat akses jarak jauh');
+          add.onclick = async () => {
+            add.disabled = true;
+            try {
+              const r = await api('/tunnel/sites', { method: 'POST', body: JSON.stringify({
+                label: 'db', project: i.name, target: i.container, port: c.exposePort, proto: 'tcp' }) });
+              toast(r.warning || `${r.site.hostname} siap`);
+              paintRemote();
+            } catch (e) { toast(e.message); add.disabled = false; }
+          };
+          remoteArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:8px' },
+            'Buat basis data ini bisa diakses dari device lain (mis. laptop teman), lewat Cloudflare Tunnel — '
+            + 'aman, tanpa buka port ke internet.'), add);
+        }
+      }
+      paintRemote();
+
+      // ── REST API otomatis (setara Supabase) — kayak PostgREST: dapet URL
+      // HTTPS + API key, tinggal fetch() dari mana pun tanpa install
+      // software tambahan di sisi yang connect. Cuma didukung PostgreSQL
+      // yang dibuat lewat panel ini (bukan external, bukan MySQL/Mongo).
+      // Dibuat OTOMATIS di background pas basis data ini dibuat (lihat
+      // autoDeployRestApi di server.js) — jadi di sini cukup polling sampai
+      // siap, TANPA tombol manual, biar nggak dobel sama proses auto-nya.
+      const apiArea = el('div');
+      let apiPollTimer = null;
+      async function paintApi(attempt = 0) {
+        if (apiPollTimer) { clearTimeout(apiPollTimer); apiPollTimer = null; }
+        if (i.external || i.engine !== 'postgres') {
+          apiArea.replaceChildren(
+            el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:8px' },
+              'REST API otomatis cuma tersedia untuk basis data PostgreSQL yang dibuat lewat panel ini. '
+              + 'Pakai koneksi langsung di bawah buat basis data ini.'),
+            el('div', { class: 'sec' }, 'For your .env file'),
+            el('div', { class: 'card' }, el('div', { class: 'card-b mono',
+              style: 'white-space:pre-wrap;font-size:11.5px' }, c.envExample)));
+          return;
+        }
+        const rec = await api(`/db/instances/${i.id}/api`).catch(() => null);
+        if (rec) {
+          const base = rec.hostname ? `https://${rec.hostname}` : '(subdomain belum siap)';
+          const envBlock = `DATABASE_API_URL=${base}\nDATABASE_API_KEY=${rec.apiKey}`;
+          const example = `fetch("${base}/nama_tabel", {\n  headers: {\n    apikey: "${rec.apiKey}",\n    Authorization: "Bearer ${rec.apiKey}"\n  }\n}).then(r => r.json())`;
+          const del = el('button', { class: 'btn danger', style: 'margin-top:8px' }, 'Hapus REST API');
+          del.onclick = async () => {
+            if (!confirm('Hapus REST API ini? Aplikasi yang pakai API key ini bakal berhenti nyambung.')) return;
+            try { await api(`/db/instances/${i.id}/api`, { method: 'DELETE' });
+              toast('Dihapus'); paintApi(999); } catch (e) { toast(e.message); }
+          };
+          apiArea.replaceChildren(
+            copyBox('URL', base, 'Base URL — tambah /nama_tabel di belakang, persis kayak Supabase.'),
+            copyBox('API key', rec.apiKey,
+              'Taruh di header apikey dan Authorization: Bearer <key>. Jangan disebar kalau tabelnya sensitif.'),
+            el('div', { class: 'sec' }, 'For your .env file'),
+            el('div', { class: 'card' }, el('div', { class: 'card-b mono',
+              style: 'white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;font-size:11.5px' }, envBlock)),
+            el('div', { class: 'sec' }, 'Contoh pakai'),
+            el('div', { class: 'card' }, el('div', { class: 'card-b mono',
+              style: 'white-space:pre-wrap;word-break:break-all;overflow-wrap:anywhere;font-size:11px' }, example)),
+            del);
+          return;
+        }
+        if (attempt < 15) {
+          apiArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3)' },
+            'Menyiapkan REST API…'));
+          apiPollTimer = setTimeout(() => paintApi(attempt + 1), 2000);
+        } else {
+          const retry = el('button', { class: 'btn pri' }, 'Coba lagi');
+          retry.onclick = async () => {
+            retry.disabled = true; retry.textContent = 'Membuat…';
+            try {
+              const r = await api(`/db/instances/${i.id}/api`, { method: 'POST' });
+              toast(r.warning || `REST API siap di ${r.hostname}`);
+              paintApi();
+            } catch (e) { toast(e.message); retry.disabled = false; retry.textContent = 'Coba lagi'; }
+          };
+          apiArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:8px' },
+            'REST API belum siap juga — mungkin gagal pas dibuat otomatis.'), retry);
+        }
+      }
+      paintApi();
+
       openDrawer('Koneksi — ' + i.name, el('div', {},
-        copyBox('For apps on this server', c.internal,
-          'Use this inside your containers. They must join the "apps" network.'),
+        el('div', { class: 'sec' }, 'REST API (kayak Supabase)'),
+        apiArea,
+        el('div', { class: 'sec' }, 'Akses langsung dari container lain di server ini'),
+        copyBox('Connection string', c.internal,
+          'Buat container lain yang join jaringan "apps" — connect langsung ke Postgres tanpa lewat REST API.'),
         c.localhost ? copyBox('From your laptop (via SSH tunnel)', c.localhost) : '',
         c.tunnel ? copyBox('Tunnel command', c.tunnel,
           'Run this on your laptop, then point TablePlus at 127.0.0.1') : '',
-        el('div', { class: 'sec' }, 'For your .env file'),
-        el('div', { class: 'card' }, el('div', { class: 'card-b mono',
-          style: 'white-space:pre-wrap;font-size:11.5px' }, c.envExample)),
+        el('div', { class: 'sec' }, 'Akses dari device lain (koneksi database langsung)'),
+        remoteArea,
         el('div', { class: 'row', style: 'margin-top:14px' }, bk, rot)));
     } catch (e) { toast(e.message); }
   }

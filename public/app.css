@@ -147,7 +147,15 @@ tbody tr:hover{background:var(--sunken)}
 .empty{text-align:center;padding:44px 20px;color:var(--tx-3);font-size:12.5px}
 .empty svg{margin:0 auto 10px;opacity:.4}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
-.row{display:flex;gap:8px;align-items:center}
+/* wrap: dozens of call sites stack pills/buttons/inputs in a .row with no
+   per-site responsive handling — wrapping is a no-op when everything already
+   fits, so this is a safe blanket fix instead of patching each call site.
+   Rows that genuinely need one scrollable line (toolbars, quick-key bars)
+   override this locally, same as #actions below and Terminal's keyBar. */
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+/* Header action buttons keep a fixed 48px-tall header — scroll sideways
+   instead of wrapping onto a second line that would spill under it. */
+#actions{flex-wrap:nowrap;overflow-x:auto}
 .wrapf{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
 
 /* ══ Log ══ */
@@ -220,7 +228,12 @@ canvas{display:block;width:100%}
 }
 
 /* ══ Sub-tab ══ */
-.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px}
+/* Beberapa pages punya sampai 5 tab (Sistem, Databases) — cukup lebar buat
+   bikin seluruh halaman scroll ke samping di HP kalau tidak dibatasi di
+   sini. Scroll sendiri sebagai satu strip, bukan wrap (tab yang wrap jadi
+   dua baris kelihatan aneh, geser ke samping lebih wajar buat tab). */
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px;
+  overflow-x:auto;flex-wrap:nowrap}
 .tab{padding:7px 12px;font-size:12.5px;color:var(--tx-2);cursor:pointer;
   border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;
   align-items:center;gap:7px;user-select:none;white-space:nowrap}

@@ -385,6 +385,7 @@ VIEWS.editor = () => {
         await loadDir(parent || ws?.path || ''); renderTree(); renderTabs();
       }));
     document.body.append(menu);
+    clampMenu(menu);
     const close = () => { menu.remove(); removeEventListener('click', close); };
     setTimeout(() => addEventListener('click', close), 0);
   }

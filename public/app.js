@@ -59,6 +59,23 @@ function closeDrawer() {
 $('#scrim').onclick = closeDrawer;
 addEventListener('keydown', e => e.key === 'Escape' && closeDrawer());
 
+// Menu klik-kanan (Files, Code Editor) dulu diposisikan persis di
+// e.clientX/clientY tanpa batas — di HP, long-press dekat pinggir layar
+// sempit (yang sudah pasti terjadi karena layarnya kecil) bikin menunya
+// separuh atau seluruhnya kepotong di luar layar. Geser balik ke dalam
+// batas viewport setelah elemennya ke-append (baru ketahuan ukuran aslinya).
+function clampMenu(menu) {
+  const r = menu.getBoundingClientRect();
+  const pad = 8;
+  let dx = 0, dy = 0;
+  if (r.right > innerWidth - pad) dx = innerWidth - pad - r.right;
+  if (r.bottom > innerHeight - pad) dy = innerHeight - pad - r.bottom;
+  if (r.left + dx < pad) dx = pad - r.left;
+  if (r.top + dy < pad) dy = pad - r.top;
+  if (dx) menu.style.left = (r.left + dx) + 'px';
+  if (dy) menu.style.top = (r.top + dy) + 'px';
+}
+
 /* ═══════════ Ikon ═══════════ */
 const I = {
   gauge: '<path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M13.4 10.6 19 5"/><path d="M20.5 16.5a9.5 9.5 0 1 0-17 0"/>',
@@ -296,7 +313,8 @@ VIEWS.overview = () => {
   const fromInp = el('input', { type: 'datetime-local', style: 'max-width:172px' });
   const toInp = el('input', { type: 'datetime-local', style: 'max-width:172px' });
   const applyCustom = el('button', { class: 'btn', style: 'height:28px;font-size:11.5px' }, 'Terapkan');
-  const customBar = el('div', { class: 'row', style: `gap:6px;display:${range === 'custom' ? 'flex' : 'none'}` },
+  const customBar = el('div', { class: 'row',
+    style: `gap:6px;flex-wrap:wrap;display:${range === 'custom' ? 'flex' : 'none'}` },
     fromInp, el('span', { style: 'color:var(--tx-3)' }, '–'), toInp, applyCustom);
 
   rangeSel.onchange = () => {
@@ -979,6 +997,7 @@ VIEWS.files = () => {
         refreshTree(); load(); } catch (err) { toast(err.message); }
     }));
     document.body.append(menu);
+    clampMenu(menu);
     setTimeout(() => document.addEventListener('click', () => menu.remove(), { once: true }), 0);
   }
 

@@ -1477,10 +1477,10 @@ const server = http.createServer(async (req, res) => {
         let snapshots = [];
         if (mounted) {
           try {
-            const names = await fs.readdir(`${HR}/mnt/backup/snapshots`);
+            const names = await fs.readdir(`${HR}/mnt/backup/auto`);
             for (const n of names) {
               if (!/^\d{4}-\d{2}-\d{2}_\d{4}$/.test(n)) continue;
-              const st = await fs.stat(`${HR}/mnt/backup/snapshots/${n}`).catch(() => null);
+              const st = await fs.stat(`${HR}/mnt/backup/auto/${n}`).catch(() => null);
               if (st) snapshots.push({ name: n, at: st.mtimeMs });
             }
           } catch {}

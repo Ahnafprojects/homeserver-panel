@@ -90,6 +90,36 @@ mount "$MOUNT" 2>/dev/null || mount -a 2>/dev/null || true
 if mountpoint -q "$MOUNT"; then
     AVAIL=$(df -Ph "$MOUNT" | awk 'NR==2{print $4}')
     echo "    ter-mount. Ruang tersedia: $AVAIL"
+
+    mkdir -p "$MOUNT/auto" "$MOUNT/manual"
+    cat > "$MOUNT/README.txt" <<'EOF'
+Struktur folder drive backup ini
+=================================
+
+auto/       Snapshot HARIAN otomatis (server-backup.timer, tiap jam 02:00,
+            juga jalan begitu drive ini dicolok). Satu subfolder per waktu
+            backup, format nama: YYYY-MM-DD_HHMM.
+
+            auto/latest -> symlink ke snapshot yang paling baru.
+
+            Isi tiap snapshot:
+              files/       salinan /srv/data dan /srv/stacks
+              databases/   dump basis data (Postgres/MariaDB/Mongo/Redis)
+                           dari fitur Database di panel
+              system/      fstab, smb.conf, server-alerts.conf
+
+            File yang sama persis antar-snapshot di-hardlink (tidak
+            disalin ulang), jadi tiap snapshot terlihat lengkap padahal
+            cuma perubahannya yang makan ruang. JANGAN edit langsung isi
+            snapshot lama — hardlink berarti perubahan itu bisa kena ke
+            snapshot lain juga.
+
+manual/     Backup sekali-jalan yang dipicu tombol "Back up now" di
+            panel (per-basis data atau per-database), bukan otomatis.
+
+Cara restore: jalankan "sudo server-restore" (bukan salin manual).
+EOF
+    echo "    struktur folder: auto/, manual/, README.txt"
 else
     warn "Gagal mount. Cek manual: sudo mount $MOUNT"
 fi
@@ -116,12 +146,17 @@ LOCK=/var/run/server-backup.lock
 DBDUMP_DIR=/srv/db-dumps
 STATE_FILE=/srv/panel-state/databases.json
 
-# Yang di-backup. Tambah/kurangi sesuai kebutuhan.
-# /srv/db-dumps diisi otomatis di bawah, sebelum rsync — lihat dump_databases().
-SOURCES=(
+# Tiap snapshot dipecah jadi 3 kelompok, masing-masing di-rsync (dan
+# di-hardlink lewat --link-dest) TERPISAH — biar strukturnya jelas dibaca
+# (files/ vs databases/ vs system/), bukan berkas & folder ketimpuk jadi satu
+# tumpukan rata. Tambah/kurangi isinya sesuai kebutuhan.
+FILES_SOURCES=(
     /srv/data
     /srv/stacks
-    /srv/db-dumps
+)
+# /srv/db-dumps diisi otomatis di bawah, sebelum rsync — lihat dump_databases().
+DB_SOURCE=/srv/db-dumps
+SYSTEM_SOURCES=(
     /etc/server-alerts.conf
     /etc/samba/smb.conf
     /etc/fstab
@@ -218,25 +253,39 @@ DB_OK=$(cut -d'|' -f1 <<<"$DB_RESULT")
 DB_FAIL=$(cut -d'|' -f2 <<<"$DB_RESULT")
 DB_FAILED_NAMES=$(cut -d'|' -f3 <<<"$DB_RESULT")
 
-DEST="$MOUNT/snapshots"
-mkdir -p "$DEST"
+# auto/ = snapshot otomatis (ini). manual/ = backup sekali-jalan yang dipicu
+# tombol di panel (fitur lain, lihat BACKUP_DIR di src/admin.js) — dua-duanya
+# sengaja dipisah dari root drive supaya jelas mana yang otomatis vs manual.
+DEST="$MOUNT/auto"
+mkdir -p "$DEST" "$MOUNT/manual"
 STAMP=$(date +%Y-%m-%d_%H%M)
 NEW="$DEST/$STAMP"
 LATEST="$DEST/latest"
 
-LINKARG=()
-[[ -d "$LATEST" ]] && LINKARG=(--link-dest="$(readlink -f "$LATEST")")
+# --link-dest per kelompok (files/databases/system), bukan satu buat semua —
+# supaya tetap hemat ruang (hardlink ke yang tidak berubah) sekalipun tiap
+# kelompok sekarang di-rsync sebagai langkah terpisah.
+LR=""
+[[ -d "$LATEST" ]] && LR=$(readlink -f "$LATEST")
+LINKARG_FILES=(); LINKARG_DB=(); LINKARG_SYS=()
+[[ -n "$LR" && -d "$LR/files" ]]     && LINKARG_FILES=(--link-dest="$LR/files")
+[[ -n "$LR" && -d "$LR/databases" ]] && LINKARG_DB=(--link-dest="$LR/databases")
+[[ -n "$LR" && -d "$LR/system" ]]    && LINKARG_SYS=(--link-dest="$LR/system")
 
 START=$(date +%s)
 LOGF=$(mktemp)
+mkdir -p "$NEW/files" "$NEW/databases" "$NEW/system"
 
 # -a  : pertahankan permission, owner, timestamp, symlink
 # -x  : jangan lintas filesystem (jangan ikut masuk drive lain)
 # --delete : snapshot mencerminkan kondisi sekarang, bukan menumpuk
-if rsync -ax --delete --stats \
-        "${LINKARG[@]}" \
+if rsync -ax --delete --stats "${LINKARG_FILES[@]}" \
         --exclude='*.tmp' --exclude='lost+found' \
-        "${SOURCES[@]}" "$NEW/" >"$LOGF" 2>&1; then
+        "${FILES_SOURCES[@]}" "$NEW/files/" >"$LOGF" 2>&1 \
+    && rsync -ax --delete --stats "${LINKARG_DB[@]}" \
+        "$DB_SOURCE/" "$NEW/databases/" >>"$LOGF" 2>&1 \
+    && rsync -ax --delete --stats "${LINKARG_SYS[@]}" \
+        "${SYSTEM_SOURCES[@]}" "$NEW/system/" >>"$LOGF" 2>&1; then
     rm -rf "$LATEST"
     ln -s "$NEW" "$LATEST"
 
@@ -248,7 +297,8 @@ if rsync -ax --delete --stats \
     done
 
     DUR=$(( $(date +%s) - START ))
-    XFER=$(awk '/Total transferred file size/{print $5" "$6}' "$LOGF" | head -1)
+    XFER_B=$(awk '/Total transferred file size/{gsub(",","",$5); sum+=$5} END{print sum+0}' "$LOGF")
+    XFER="${XFER_B} bytes"
     SIZE=$(du -sh "$NEW" 2>/dev/null | cut -f1)
     NSNAP=$(find "$DEST" -maxdepth 1 -type d -name '20*' | wc -l | tr -d ' ')
     FREE=$(df -Ph "$MOUNT" | awk 'NR==2{print $4}')
@@ -288,16 +338,19 @@ cat > /usr/local/bin/server-restore <<'SCRIPT_EOF'
 # server-restore — kembalikan data dari snapshot backup.
 set -uo pipefail
 MOUNT=/mnt/backup
-DEST="$MOUNT/snapshots"
+DEST="$MOUNT/auto"
 
 echo "Snapshot yang tersedia:"
 find "$DEST" -maxdepth 1 -type d -name '20*' 2>/dev/null | sort | nl | sed 's/^/  /'
 echo
+echo "Tiap snapshot punya 3 folder: files/ (data + stacks), databases/ (dump"
+echo "basis data), system/ (fstab, smb.conf, dst)."
+echo
 echo "Cara restore (contoh, untuk /srv/data):"
-echo "  sudo rsync -av $DEST/latest/data/ /srv/data/"
+echo "  sudo rsync -av $DEST/latest/files/data/ /srv/data/"
 echo
 echo "Restore satu file/folder saja:"
-echo "  sudo rsync -av $DEST/<tanggal>/data/folder-yang-mau/ /srv/data/folder-yang-mau/"
+echo "  sudo rsync -av $DEST/<tanggal>/files/data/folder-yang-mau/ /srv/data/folder-yang-mau/"
 echo
 echo "Lihat isi snapshot dulu sebelum restore:"
 echo "  ls -la $DEST/latest/"
@@ -372,23 +425,23 @@ cat <<EOF
   Simpan    : 7 snapshot terakhir (yang tertua dihapus otomatis)
   Notifikasi: hasil backup dikirim ke Telegram
 
-  Yang di-backup:
-    /srv/data                  data pribadi lu
-    /srv/stacks                file docker-compose
-    /srv/db-dumps               dump semua basis data dari fitur Database panel
-                                 (Postgres/MariaDB/Mongo/Redis, dump ulang tiap
-                                 backup jalan — bukan salinan volume mentah)
-    /etc/server-alerts.conf    konfigurasi alert
-    /etc/samba/smb.conf        konfigurasi share
-    /etc/fstab
+  Struktur folder di drive (baca $MOUNT/README.txt buat detail lengkap):
+    auto/<tanggal_jam>/files/       data pribadi (/srv/data) + stacks docker
+    auto/<tanggal_jam>/databases/   dump basis data dari fitur Database panel
+                                     (Postgres/MariaDB/Mongo/Redis — dump
+                                     ulang tiap backup jalan, bukan salinan
+                                     volume mentah)
+    auto/<tanggal_jam>/system/      fstab, smb.conf, server-alerts.conf
+    auto/latest                     symlink ke snapshot paling baru
+    manual/                         backup sekali-jalan dari tombol di panel
 
   Perintah:
     sudo server-backup                 # backup sekarang
     sudo server-restore                # lihat snapshot & cara restore
-    ls /mnt/backup/snapshots/          # daftar snapshot
+    ls /mnt/backup/auto/               # daftar snapshot
     systemctl list-timers | grep backup
 
-  Kalau mau menambah folder yang di-backup, edit array SOURCES di:
+  Kalau mau menambah folder yang di-backup, edit FILES_SOURCES/SYSTEM_SOURCES di:
     sudo nano /usr/local/bin/server-backup
 
 EOF

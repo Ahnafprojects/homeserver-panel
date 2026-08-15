@@ -17,6 +17,7 @@ import * as dbaas from './dbaas.js';
 import * as dbapi from './dbapi.js';
 import { WebSocketServer } from 'ws';
 import * as sys from './system.js';
+import * as pty from 'node-pty';
 
 // Dipakai khusus untuk terminal web (/ws/term). Implementasi WS tulisan sendiri
 // (ws.js) di-drop untuk endpoint ini karena ada bug framing yang tidak
@@ -2094,10 +2095,13 @@ server.on('upgrade', async (req, socket, head) => {
   }
 
   // Shell host: masuk ke namespace PID 1 supaya benar-benar di mesin, bukan container.
-  // Dibungkus 'script' supaya shell dapat PTY sungguhan — tanpa ini shell jalan
-  // non-interaktif (tidak ada echo, tidak ada prompt), yang kelihatan dari luar
-  // seperti "tidak bisa diketik" padahal perintah sebenarnya diterima.
-  import('node:child_process').then(({ spawn }) => {
+  // Pakai node-pty (bukan spawn+'script' seperti sebelumnya) supaya shell dapat
+  // PTY sungguhan yang BISA di-resize (ioctl TIOCSWINSZ) — sebelumnya pesan
+  // resize dari browser cuma dibuang (lihat git blame), jadi program yang
+  // gambar UI-nya sendiri berdasar ukuran layar (less, vim, htop, CLI kayak
+  // claude/codex) selalu mengira terminalnya 80x24 default, kepotong di
+  // pojok kiri-atas walau kotak terminal di browser sudah besar.
+  try {
     // Kalau dibuka dari Code Editor dengan folder project aktif, masuk
     // langsung ke folder itu — kayak terminal terpadu VS Code. Path lewat
     // env var (PANEL_CWD), bukan ditempel langsung ke command, supaya tidak
@@ -2107,32 +2111,35 @@ server.on('upgrade', async (req, socket, head) => {
     // cuma binari sistem — tool yang di-install per-user (npm/pip/pipx
     // --user, misalnya CLI seperti claude/codex) taruh di ~/.local/bin milik
     // user itu, bukan kebaca root. Tambahkan semua folder itu ke PATH dulu.
-    const sh = spawn('script', ['-qc',
-      'nsenter -t 1 -m -u -n -i -- sh -c \''
-      + 'for d in /home/*/.local/bin /root/.local/bin; do [ -d "$d" ] && PATH="$PATH:$d"; done; export PATH; '
+    const shCmd = 'for d in /home/*/.local/bin /root/.local/bin; do [ -d "$d" ] && PATH="$PATH:$d"; done; export PATH; '
       + '[ -n "$PANEL_CWD" ] && cd "$PANEL_CWD" 2>/dev/null; '
       // Prompt polos "# " tanpa nama folder bikin susah tahu 'cd' beneran
       // pindah atau tidak. Pakai bash biar prompt-nya bisa nunjukin folder
       // sekarang (\\w) dan ter-update tiap kali pindah folder.
       + 'export PS1="\\w # "; '
-      + 'exec bash --norc --noprofile -i\'',
-      '/dev/null'],
-      { stdio: ['pipe', 'pipe', 'pipe'],
-        // TERM wajib diset — tanpa ini perintah yang baca terminfo (clear,
-        // less, vim, dst) gagal dengan "TERM environment variable not set".
-        env: { ...process.env, TERM: 'xterm-256color', PANEL_CWD: cwdReq } });
-    sh.stdout.on('data', (d) => ws.send(d));
-    sh.stderr.on('data', (d) => ws.send(d));
-    sh.on('close', () => ws.close());
-    sh.on('error', (e) => { ws.send(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); ws.close(); });
+      + 'exec bash --norc --noprofile -i';
+    const term = pty.spawn('nsenter', ['-t', '1', '-m', '-u', '-n', '-i', '--', 'sh', '-c', shCmd], {
+      name: 'xterm-256color', cols: 80, rows: 24,
+      // TERM wajib diset — tanpa ini perintah yang baca terminfo (clear,
+      // less, vim, dst) gagal dengan "TERM environment variable not set".
+      env: { ...process.env, TERM: 'xterm-256color', PANEL_CWD: cwdReq },
+    });
+    term.onData((d) => { try { ws.send(d); } catch {} });
+    term.onExit(() => { try { ws.close(); } catch {} });
     ws.on('message', (b) => {
       const t = b.toString();
-      if (t.startsWith('\x00resize:')) return;
-      try { sh.stdin.write(b); } catch {}
+      if (t.startsWith('\x00resize:')) {
+        const [rows, cols] = t.slice(8).split(',').map(Number);
+        if (rows > 0 && cols > 0) { try { term.resize(cols, rows); } catch {} }
+        return;
+      }
+      try { term.write(t); } catch {}
     });
-    ws.on('close', () => { try { sh.kill(); } catch {} });
+    ws.on('close', () => { try { term.kill(); } catch {} });
     ws.send('\r\n\x1b[90m— shell host —\x1b[0m\r\n');
-  });
+  } catch (e) {
+    ws.send(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); ws.close();
+  }
   });
 });
 

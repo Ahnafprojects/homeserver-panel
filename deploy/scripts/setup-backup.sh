@@ -96,7 +96,7 @@ if mountpoint -q "$MOUNT"; then
 Struktur folder drive backup ini
 =================================
 
-auto/       Snapshot HARIAN otomatis (server-backup.timer, tiap jam 02:00,
+auto/       Snapshot HARIAN otomatis (server-backup.timer, tiap jam 03:00,
             juga jalan begitu drive ini dicolok). Satu subfolder per waktu
             backup, format nama: YYYY-MM-DD_HHMM.
 
@@ -379,10 +379,10 @@ SCRIPT_EOF
 
 cat > /etc/systemd/system/server-backup.timer <<'SCRIPT_EOF'
 [Unit]
-Description=Backup otomatis tiap hari jam 2 pagi
+Description=Backup otomatis tiap hari jam 3 pagi
 
 [Timer]
-OnCalendar=*-*-* 02:00:00
+OnCalendar=*-*-* 03:00:00
 # Persistent: kalau server mati saat jadwalnya, backup dijalankan
 # begitu server nyala lagi — jadi tidak ada hari yang terlewat.
 Persistent=true
@@ -394,7 +394,7 @@ SCRIPT_EOF
 
 systemctl daemon-reload
 systemctl enable --now server-backup.timer >/dev/null
-echo "    backup otomatis tiap hari 02:00 (dan langsung jalan kalau terlewat)"
+echo "    backup otomatis tiap hari 03:00 (dan langsung jalan kalau terlewat)"
 
 # Bonus: backup juga langsung saat drive dicolok.
 cat > /etc/udev/rules.d/99-backup-drive.rules <<EOF
@@ -416,7 +416,7 @@ else
 #!/usr/bin/env bash
 #
 # battery-backup-check — laptop ini jalan sebagai server 24/7, jadi kalau
-# listrik mati dan cuma mengandalkan baterai, backup harian jam 02:00 saja
+# listrik mati dan cuma mengandalkan baterai, backup harian jam 03:00 saja
 # tidak cukup — baterainya bisa habis duluan sebelum jadwal itu tiba.
 # Dicek tiap 2 menit lewat timer; begitu baterai <= ambang batas DAN lagi
 # tidak dicas (bukan cuma dicabut charger-nya doang), langsung backup
@@ -495,7 +495,7 @@ say "SELESAI"
 cat <<EOF
 
   Drive     : $DEV -> $MOUNT
-  Jadwal    : tiap hari 02:00, plus setiap drive dicolok, plus darurat
+  Jadwal    : tiap hari 03:00, plus setiap drive dicolok, plus darurat
               begitu baterai <=20% dan tidak lagi dicas
   Simpan    : 7 snapshot terakhir (yang tertua dihapus otomatis)
   Notifikasi: hasil backup dikirim ke Telegram

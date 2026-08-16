@@ -14,7 +14,11 @@ const SITES_FILE = path.join(STATE, 'tunnel-sites.json');
 const CONFIG_PATH = process.env.CLOUDFLARED_CONFIG || '/host/root/etc/cloudflared/config.yml';
 const TUNNEL_NAME = process.env.TUNNEL_NAME || 'homeserver';
 const BASE_DOMAIN = process.env.TUNNEL_DOMAIN || 'ahnaf.cloud';
-const PANEL_PORT = process.env.PANEL_LOCAL_PORT || '8090';
+// SENGAJA beda dari port LAN panel (8090) — port ini (lihat server.js
+// "tunnelServer") cuma di-publish ke 127.0.0.1, jadi CF-Connecting-IP yang
+// nyampe lewat sini dijamin beneran dari Cloudflare, bukan dititipin
+// perangkat lain di LAN yang sama (lihat komentar ipOf() di server.js).
+const PANEL_PORT = process.env.PANEL_TUNNEL_PORT || '8091';
 const NSENTER = ['-t', '1', '-m', '-u', '-n', '-i', '--'];
 
 let sites = [];

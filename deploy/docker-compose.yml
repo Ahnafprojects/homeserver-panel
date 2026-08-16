@@ -14,6 +14,11 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8080"          # remove this once Caddy fronts the panel
+      # Jalur KHUSUS cloudflared — publish cuma ke 127.0.0.1 (bukan
+      # 0.0.0.0), jadi mustahil dijangkau LAN atau internet langsung.
+      # Dipakai buat memverifikasi CF-Connecting-IP beneran dari Cloudflare
+      # (lihat ipOf() di server.js). Jangan ubah jadi 0.0.0.0 di sini.
+      - "127.0.0.1:8091:8081"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /srv/data:/data                  # your files

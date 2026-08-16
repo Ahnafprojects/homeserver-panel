@@ -36,6 +36,10 @@ const PUBLIC = path.join(__dir, '..', 'public');
 const DATA_ROOT = process.env.DATA_ROOT || '/data';
 const STATE_DIR = process.env.STATE_DIR || '/state';
 const PORT = +(process.env.PORT || 8080);
+// Port kedua, khusus buat cloudflared (lihat penjelasan di dekat definisi
+// tunnelServer) — dipublish ke host cuma lewat 127.0.0.1, tidak pernah
+// kena LAN atau internet.
+const TUNNEL_PORT = +(process.env.TUNNEL_PORT || 8081);
 
 const TG_TOKEN = process.env.TG_TOKEN || '';
 const TG_CHAT = process.env.TG_CHAT || '';
@@ -533,6 +537,16 @@ const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const cleanIp = (s2) => String(s2 || '').replace(/[^0-9a-fA-F:.\[\]]/g, '').slice(0, 45);
 const ipOf = (req) => {
   const direct = cleanIp(req.socket.remoteAddress) || '?';
+  // CF-Connecting-IP (IP asli pengunjung dari Cloudflare) cuma dipercaya
+  // kalau request-nya beneran nyampe lewat "tunnelServer" (port khusus
+  // cloudflared, lihat definisi di dekat http.createServer) — port itu
+  // publish-nya cuma ke 127.0.0.1 di level Docker, jadi mustahil dijangkau
+  // perangkat lain di LAN walau tahu nomor portnya. Tanpa syarat ini,
+  // perangkat lain yang sama-sama bisa akses port panel biasa (8090) bisa
+  // nitip CF-Connecting-IP palsu sendiri buat mengelabui pencatatan IP
+  // (mis. "sign-in dari device baru" jadi salah lapor).
+  const cf = req.socket.localPort === TUNNEL_PORT ? cleanIp(req.headers['cf-connecting-ip']) : '';
+  if (cf) return cf;
   if (!TRUST_PROXY) return direct;
   const fwd = cleanIp((req.headers['x-forwarded-for'] || '').split(',')[0]);
   return fwd || direct;
@@ -547,7 +561,7 @@ function sessionOf(req) {
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = u.pathname;
   const q = u.searchParams;
@@ -2204,13 +2218,24 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     return fail(res, e, e.status || 500);
   }
-});
+};
 
+// Server kedua, port TERPISAH, cuma dibuka ke localhost (lihat deploy
+// docker-compose.yml: "127.0.0.1:8091:8081") — SATU-SATUNYA yang boleh
+// menjangkau port ini adalah cloudflared di laptop yang sama (config.yml
+// tunnel.js mengarah ke sini, bukan ke port LAN 8090). Karena itu, koneksi
+// yang datang lewat port ini (dicek dari req.socket.localPort) dijamin
+// beneran lewat Cloudflare Tunnel — headernya (CF-Connecting-IP) baru
+// dipercaya kalau lewat sini. Perangkat lain di LAN sama sekali tidak bisa
+// menjangkau port ini walau tahu nomornya, karena publish-nya cuma ke
+// 127.0.0.1 di level Docker/host, bukan cuma soal firewall.
+const server = http.createServer(requestHandler);
+const tunnelServer = http.createServer(requestHandler);
 
 // ── Terminal web (WebSocket) ────────────────────────────────────────────────
 // Dua mode: shell di host (lewat nsenter ke PID 1) dan shell di dalam
 // container (lewat Docker exec). Keduanya butuh sesi yang sah.
-server.on('upgrade', async (req, socket, head) => {
+const upgradeHandler = async (req, socket, head) => {
   const u = new URL(req.url, 'http://x');
   if (!u.pathname.startsWith('/ws/term')) { socket.destroy(); return; }
 
@@ -2332,7 +2357,9 @@ server.on('upgrade', async (req, socket, head) => {
     ws.send(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); ws.close();
   }
   });
-});
+};
+server.on('upgrade', upgradeHandler);
+tunnelServer.on('upgrade', upgradeHandler);
 
 dbaas.ensureNetwork().catch(() => {});
 
@@ -2348,4 +2375,7 @@ setTimeout(async () => {
 server.listen(PORT, () => {
   console.log(`[panel] siap di :${PORT}  data=${DATA_ROOT}  state=${STATE_DIR}`);
   if (TG_TOKEN && TG_CHAT) notify('Panel menyala', 'Panel home server sudah aktif.');
+});
+tunnelServer.listen(TUNNEL_PORT, () => {
+  console.log(`[panel] jalur tunnel siap di :${TUNNEL_PORT} (cuma buat cloudflared)`);
 });

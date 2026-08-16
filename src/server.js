@@ -1997,9 +1997,14 @@ const server = http.createServer(async (req, res) => {
           // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
           // perbesar file yang sudah lebih kecil dari ukuran diminta.
           // nice+ionice idle: proses berat ini tidak boleh rebutan CPU/disk
-          // sama panel sendiri atau container lain.
-          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'magick', `${f}[0]`, '-auto-orient',
-            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile], { timeout: 30000 });
+          // sama panel sendiri atau container lain. -limit thread 1: TANPA
+          // ini satu proses magick sendiri bisa pakai >200% CPU (ImageMagick
+          // multi-thread internal lewat OpenMP) — jadi cuma batasi JUMLAH
+          // proses (thumbSlot) tidak cukup, 2 proses x 2-3 thread tiap satu
+          // tetap bisa gerus semua 4 thread laptop ini.
+          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'magick', '-limit', 'thread', '1',
+            `${f}[0]`, '-auto-orient', '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile],
+            { timeout: 30000 });
           return await serve();
         } catch (e) {
           console.error('[thumb]', f, e.message);

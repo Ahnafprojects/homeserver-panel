@@ -944,32 +944,71 @@ VIEWS.settings = () => {
 
     /* Akses SSH dari luar — kartu referensi doang (caranya suka lupa),
        cari entri tunnel proto tcp port 22 yang dibikinkan lewat Cloudflare
-       Tunnel (lihat tunnel.js) daripada nge-hardcode hostname-nya di sini. */
+       Tunnel (lihat tunnel.js) daripada nge-hardcode hostname-nya di sini.
+       Langkahnya beda dikit per OS (path cloudflared, cara buka terminal,
+       cara edit file), jadi dipisah per OS — bukan 3 baris generik yang
+       ternyata masih bikin bingung harus mulai dari mana. */
     const sshSite = (tun.sites || []).find(s => s.proto === 'tcp' && s.port === 22);
     const sshCard = sshSite ? (() => {
-      const snippet = `Host ahnaf-server\n    HostName ${sshSite.hostname}\n`
-        + `    User ahnaf\n    ProxyCommand cloudflared access ssh --hostname %h`;
-      const box = el('textarea', { readonly: '', rows: '4',
-        style: 'font-family:var(--mono);font-size:11.5px;white-space:pre' });
-      box.value = snippet;
-      const cp = el('button', { class: 'btn' }, 'Copy config');
-      cp.onclick = () => { navigator.clipboard?.writeText(snippet); toast('Copied'); };
+      const dlUrl = 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/';
+      const cfgFor = (proxyCmd) => `Host ahnaf-server\n    HostName ${sshSite.hostname}\n`
+        + `    User ahnaf\n    ProxyCommand ${proxyCmd}`;
+      const osSection = (icon, label, open, installSteps, proxyCmd, editSteps) => {
+        const snippet = cfgFor(proxyCmd);
+        const box = el('textarea', { readonly: '', rows: '4',
+          style: 'font-family:var(--mono);font-size:11px;white-space:pre;margin:8px 0' });
+        box.value = snippet;
+        const cp = el('button', { class: 'btn' }, 'Copy config');
+        cp.onclick = () => { navigator.clipboard?.writeText(snippet); toast('Copied'); };
+        const step = (n, ...content) => el('div',
+          { style: 'font-size:11.5px;color:var(--tx-2);margin-bottom:6px;line-height:1.6' },
+          el('b', {}, `${n}. `), ...content);
+        let n = 1;
+        return el('details', open ? { open: '' } : {},
+          el('summary', { style: 'font-size:12.5px;font-weight:500;cursor:pointer;padding:8px 0' },
+            `${icon} ${label}`),
+          el('div', { style: 'padding:4px 0 10px' },
+            step(n++, 'Buka ', el('a', { href: dlUrl, target: '_blank', rel: 'noopener',
+              style: 'color:var(--acc)' }, 'link download cloudflared'), ' — ', ...installSteps),
+            ...editSteps.map(s => step(n++, ...s)),
+            step(n++, 'Isi persis ini (', el('span', { class: 'mono' }, '%h'),
+              ' jangan diubah, itu diisi otomatis):'),
+            box,
+            el('div', { class: 'row', style: 'margin:2px 0 8px' }, cp),
+            step(n++, 'Buka terminal/cmd lagi, ketik: ', el('span', { class: 'mono' }, 'ssh ahnaf-server')),
+            step(n, 'Kalau ditanya "continue connecting?" ketik ', el('span', { class: 'mono' }, 'yes'),
+              ', lalu masukin password akun ', el('span', { class: 'mono' }, 'ahnaf'), ' di server ini.')));
+      };
       return el('div', { class: 'card' }, el('div', { class: 'card-b' },
         el('div', { style: 'font-size:12px;color:var(--tx-2);margin-bottom:10px;line-height:1.6' },
           `Hostname: `, el('span', { class: 'mono' }, sshSite.hostname),
           el('br'), 'Lewat Cloudflare Tunnel, bukan port biasa — device yang mau ',
-          'connect wajib install ', el('span', { class: 'mono' }, 'cloudflared'), ' dulu (sekali, gratis).'),
-        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:4px' },
-          '1. Install cloudflared di device itu — ',
-          el('a', { href: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/',
-            target: '_blank', rel: 'noopener', style: 'color:var(--acc)' },
-            'link download (Windows/Mac/Linux)')),
-        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:4px' },
-          '2. Tempel ini ke ~/.ssh/config:'),
-        box,
-        el('div', { class: 'row', style: 'margin-top:8px;margin-bottom:4px' }, cp),
-        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:8px' },
-          '3. Jalankan: ', el('span', { class: 'mono' }, 'ssh ahnaf-server'))));
+          'connect wajib install ', el('span', { class: 'mono' }, 'cloudflared'), ' dulu (sekali, gratis). ',
+          'Pilih OS device kamu di bawah:'),
+        osSection('🪟', 'Windows', true,
+          ['download yang "Windows (64-bit)". Taruh file-nya di folder baru, mis. ',
+            el('span', { class: 'mono' }, 'C:\\cloudflared'),
+            ', ganti nama file jadi ', el('span', { class: 'mono' }, 'cloudflared.exe'), '.'],
+          'C:\\cloudflared\\cloudflared.exe access ssh --hostname %h',
+          [['Buka ', el('b', {}, 'Command Prompt'), ' (Start Menu, ketik "cmd"), lalu ketik:',
+            el('div', { class: 'mono', style: 'margin:4px 0;font-size:11px' },
+              'mkdir %USERPROFILE%\\.ssh', el('br'), 'notepad %USERPROFILE%\\.ssh\\config')]]),
+        osSection('🍎', 'Mac', false,
+          ['atau kalau punya Homebrew, lebih gampang: buka Terminal, ketik ',
+            el('span', { class: 'mono' }, 'brew install cloudflared'), '.'],
+          'cloudflared access ssh --hostname %h',
+          [['Buka ', el('b', {}, 'Terminal'), ' (Cmd+Space, ketik "Terminal"), lalu ketik:',
+            el('div', { class: 'mono', style: 'margin:4px 0;font-size:11px' },
+              'mkdir -p ~/.ssh && nano ~/.ssh/config')]]),
+        osSection('🐧', 'Linux', false,
+          ['download file .deb (Ubuntu/Mint/Debian) atau sesuai distro-mu, lalu install lewat terminal, mis. ',
+            el('span', { class: 'mono' }, 'sudo dpkg -i cloudflared-linux-amd64.deb'), '.'],
+          'cloudflared access ssh --hostname %h',
+          [['Buka ', el('b', {}, 'Terminal'), ', lalu ketik:',
+            el('div', { class: 'mono', style: 'margin:4px 0;font-size:11px' },
+              'mkdir -p ~/.ssh && nano ~/.ssh/config')]]),
+        el('div', { style: 'font-size:10.5px;color:var(--tx-3);margin-top:6px' },
+          'Nano: setelah diisi, tekan Ctrl+O lalu Enter buat simpan, Ctrl+X buat keluar.')));
     })() : null;
     const mine = users.users.find(u => u.username === me.user?.username);
 

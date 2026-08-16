@@ -268,6 +268,45 @@ const prettyBytes = (n) => {
   return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
 };
 
+/* Counter transaksi/query KUMULATIF langsung dari mesin basis datanya
+   sendiri — beda dari queryStats() di bawah (yang cuma nyatet kueri lewat
+   tab SQL panel). Ini nangkep SEMUA yang nyentuh database, termasuk dari
+   aplikasi kamu sendiri, persis kayak "Total Requests" di dashboard
+   Supabase. Nilainya kumulatif sejak database nyala — pemanggil yang
+   ngitung selisih antar sampling buat dapet laju per menit. */
+export async function requestCounterOf(id) {
+  const i = getInstance(id);
+  const e = ENGINES[i.engine];
+  try {
+    if (e.kind === 'postgres') {
+      const r = await runP('docker', ['exec', i.container, 'psql', '-U', i.user, '-d', i.database,
+        '-tAc', "SELECT xact_commit, xact_rollback FROM pg_stat_database WHERE datname = current_database()"]);
+      const [commit, rollback] = r.out.trim().split('|').map(Number);
+      if (!Number.isFinite(commit)) return null;
+      return { total: commit + (rollback || 0), errors: rollback || 0 };
+    }
+    if (e.kind === 'mysql') {
+      const r = await runP('docker', ['exec', '-e', `MYSQL_PWD=${i.password}`, i.container, 'mysql',
+        '-u', i.user, '-N', '-e', "SHOW GLOBAL STATUS LIKE 'Questions'"]);
+      const n = parseInt(r.out.trim().split(/\s+/)[1], 10);
+      return Number.isFinite(n) ? { total: n, errors: null } : null;
+    }
+    if (i.engine === 'mongo') {
+      const r = await runP('docker', ['exec', i.container, 'mongosh', '--quiet', i.database, '--eval',
+        'const o=db.serverStatus().opcounters; print(o.insert+o.query+o.update+o.delete+o.command+o.getmore)']);
+      const n = parseInt(r.out.trim(), 10);
+      return Number.isFinite(n) ? { total: n, errors: null } : null;
+    }
+    if (i.engine === 'redis') {
+      const r = await runP('docker', ['exec', i.container, 'redis-cli', '-a', i.password,
+        '--no-auth-warning', 'INFO', 'stats']);
+      const m = r.out.match(/total_commands_processed:(\d+)/);
+      return m ? { total: +m[1], errors: null } : null;
+    }
+    return null;
+  } catch { return null; }
+}
+
 /* Jumlah koneksi aktif ke instance — beda query per mesin. */
 export async function connectionCount(id) {
   const i = getInstance(id);

@@ -193,8 +193,12 @@ setInterval(() => autoscale.tick((l) => console.log(l)).catch(() => {}), 20000);
 setInterval(async () => {
   for (const inst of dbaas.listInstances()) {
     try {
-      const s = await docker.statsOnce(inst.container);
-      dbaas.recordSample(inst.id, { mem: memUsage(s).used, cpu: cpuPercent(s) });
+      const [s, req] = await Promise.all([
+        docker.statsOnce(inst.container),
+        dbaas.requestCounterOf(inst.id).catch(() => null),
+      ]);
+      dbaas.recordSample(inst.id, { mem: memUsage(s).used, cpu: cpuPercent(s),
+        req: req?.total ?? null, reqErr: req?.errors ?? null });
     } catch {}
   }
 }, 60000);
@@ -875,11 +879,25 @@ const requestHandler = async (req, res) => {
           const s = await docker.statsOnce(inst.container);
           cpu = cpuPercent(s); mem = memUsage(s);
         } catch {}
+        // "Total Requests" beneran (transaksi Postgres, dst) — bukan
+        // kumulatif sejak database nyala, tapi SELISIH dari jendela riwayat
+        // yang ada (~3 jam terakhir), biar anginnya kebaca kalau lagi rame.
+        const hist = dbaas.getHistory(m[1]).filter(p => p.req != null);
+        let reqTotal = null, reqErrors = null, successRate = null;
+        if (hist.length >= 2) {
+          const first = hist[0], last = hist[hist.length - 1];
+          reqTotal = Math.max(0, last.req - first.req);
+          if (first.reqErr != null && last.reqErr != null) {
+            reqErrors = Math.max(0, last.reqErr - first.reqErr);
+            successRate = reqTotal > 0 ? Math.round(((reqTotal - reqErrors) / reqTotal) * 100) : 100;
+          }
+        }
         return ok(res, {
           engine: inst.engine, version: inst.version, created: inst.created,
           state: status.state, statusText: status.status, size,
           connections, memUsed: mem.used, memLimit: mem.limit || null,
           cpuPercent: cpu, queryStats: dbaas.queryStats(m[1]),
+          reqTotal, reqErrors, successRate,
         });
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/rotate$/)) && req.method === 'POST') {

@@ -523,13 +523,20 @@ VIEWS.database = () => {
             meta ? el('div', { class: 'm' }, meta) : '', bar || '');
         };
         const memPct = o.memLimit ? Math.round((o.memUsed / o.memLimit) * 100) : null;
-        const qs = o.queryStats || {};
         const pts = h.history || [];
+        // Selisih antar sampel = jumlah request DI JENDELA ITU (mis. 60
+        // detik) — persis konsep grafik "Total Requests" Supabase, tapi
+        // ditarik dari statistik transaksi asli mesin basis datanya
+        // sendiri (pg_stat_database dkk), jadi nangkep traffic dari
+        // APLIKASI KAMU, bukan cuma yang dijalankan lewat tab SQL panel.
+        const reqPts = pts.filter(p => p.req != null);
+        const reqDeltas = reqPts.slice(1).map((p, idx) => Math.max(0, p.req - reqPts[idx].req));
 
-        const c1 = el('canvas'), c2 = el('canvas');
+        const c1 = el('canvas'), c2 = el('canvas'), c3 = el('canvas');
         const card = (t, c) => el('div', { class: 'card' },
           el('div', { class: 'card-h' }, el('h3', {}, t)), el('div', { class: 'card-b' }, c));
         const chartsWrap = el('div', { class: 'grid2' },
+          card('Requests (per menit, 3 jam terakhir)', c3),
           card('Memory (3 jam terakhir)', c1), card('CPU % (3 jam terakhir)', c2));
 
         body.replaceChildren(
@@ -542,18 +549,23 @@ VIEWS.database = () => {
               o.memLimit ? `${bytes(o.memUsed)} / ${bytes(o.memLimit)}` : 'tidak terbaca', memPct),
             stat('CPU', 'cpu', `${o.cpuPercent ?? 0}<small>%</small>`, 'saat ini'),
             stat('Koneksi aktif', 'net', o.connections != null ? o.connections : '—', ''),
-            stat('Kueri (lewat panel)', 'clock', qs.total || 0,
-              qs.total ? `rata-rata ${qs.avgMs}ms · ${qs.slow || 0} lambat · ${qs.errors || 0} error` : 'belum ada riwayat')),
+            stat('Total Requests', 'pulse', o.reqTotal != null ? o.reqTotal : '—',
+              o.successRate != null ? `${o.successRate}% sukses (3 jam)`
+                : o.reqTotal != null ? '3 jam terakhir' : 'belum ada data')),
           pts.length >= 2 ? chartsWrap : el('div', {
             style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px' },
-            'Grafik RAM/CPU baru muncul setelah beberapa menit (disampel tiap 60 detik).'),
+            'Grafik baru muncul setelah beberapa menit (disampel tiap 60 detik).'),
           el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6' },
             'Dibuat ' + new Date(o.created).toLocaleString('id-ID') +
-            '. "Kueri" cuma menghitung yang dijalankan lewat tab SQL panel ini, bukan dari aplikasi kamu.'));
+            '. "Total Requests" dihitung dari statistik transaksi mesin basis datanya sendiri '
+            + '(bukan cuma tab SQL panel) — mencerminkan traffic dari aplikasi kamu juga.'));
 
         if (pts.length >= 2) {
           chart(c1, [{ data: pts.map(p => p.mem), color: '#5b8def' }], { fmt: v => bytes(v) });
           chart(c2, [{ data: pts.map(p => p.cpu), color: '#e5484d' }], { max: 100 });
+        }
+        if (reqDeltas.length >= 2) {
+          chart(c3, [{ data: reqDeltas, color: '#3dbb7d' }]);
         }
       } catch (e) { body.replaceChildren(el('div', { class: 'empty' }, e.message)); }
     }

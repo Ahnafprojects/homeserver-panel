@@ -302,6 +302,29 @@ export function memLimitOf(id) {
   return i.engine === 'mongo' ? '768m' : '512m';
 }
 
+/* ══ Riwayat RAM/CPU per instance ═══════════════════════════════════════════
+   Dipakai grafik di tab Overview — disampling tiap 60 detik dari server.js
+   (butuh docker.statsOnce, yang belum diimport di sini), disimpan bulat 3
+   jam terakhir (180 titik) biar tidak numpuk tak terbatas. */
+const HIST_FILE = path.join(STATE, 'db-history.json');
+const HIST_MAX = 180;
+let dbHistory = {};
+try { dbHistory = JSON.parse(fs.readFileSync(HIST_FILE, 'utf8')); } catch {}
+let histDirty = false;
+setInterval(() => {
+  if (!histDirty) return;
+  histDirty = false;
+  try { fs.mkdirSync(STATE, { recursive: true }); fs.writeFileSync(HIST_FILE, JSON.stringify(dbHistory)); } catch {}
+}, 30000);
+
+export function recordSample(id, sample) {
+  if (!dbHistory[id]) dbHistory[id] = [];
+  dbHistory[id].push({ t: Date.now(), ...sample });
+  if (dbHistory[id].length > HIST_MAX) dbHistory[id].splice(0, dbHistory[id].length - HIST_MAX);
+  histDirty = true;
+}
+export function getHistory(id) { return dbHistory[id] || []; }
+
 
 /* ══ Riwayat kueri ══════════════════════════════════════════════════════════
    Setiap kueri yang dijalankan lewat panel dicatat: teksnya, lama jalan,

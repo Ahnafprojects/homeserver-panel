@@ -509,7 +509,10 @@ VIEWS.database = () => {
     async function viewOverview(body) {
       body.replaceChildren(el('div', { class: 'empty' }, 'Loading…'));
       try {
-        const o = await api(`/db/instances/${i.id}/overview`);
+        const [o, h] = await Promise.all([
+          api(`/db/instances/${i.id}/overview`),
+          api(`/db/instances/${i.id}/history`),
+        ]);
         const stat = (key, icon, val, meta, pct) => {
           const bar = pct != null ? el('div', { class: 'bar' },
             el('i', { style: `width:${Math.min(pct, 100)}%`,
@@ -521,6 +524,14 @@ VIEWS.database = () => {
         };
         const memPct = o.memLimit ? Math.round((o.memUsed / o.memLimit) * 100) : null;
         const qs = o.queryStats || {};
+        const pts = h.history || [];
+
+        const c1 = el('canvas'), c2 = el('canvas');
+        const card = (t, c) => el('div', { class: 'card' },
+          el('div', { class: 'card-h' }, el('h3', {}, t)), el('div', { class: 'card-b' }, c));
+        const chartsWrap = el('div', { class: 'grid2' },
+          card('Memory (3 jam terakhir)', c1), card('CPU % (3 jam terakhir)', c2));
+
         body.replaceChildren(
           el('div', { class: 'stats' },
             stat('Status', 'pulse',
@@ -533,9 +544,17 @@ VIEWS.database = () => {
             stat('Koneksi aktif', 'net', o.connections != null ? o.connections : '—', ''),
             stat('Kueri (lewat panel)', 'clock', qs.total || 0,
               qs.total ? `rata-rata ${qs.avgMs}ms · ${qs.slow || 0} lambat · ${qs.errors || 0} error` : 'belum ada riwayat')),
+          pts.length >= 2 ? chartsWrap : el('div', {
+            style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px' },
+            'Grafik RAM/CPU baru muncul setelah beberapa menit (disampel tiap 60 detik).'),
           el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6' },
             'Dibuat ' + new Date(o.created).toLocaleString('id-ID') +
             '. "Kueri" cuma menghitung yang dijalankan lewat tab SQL panel ini, bukan dari aplikasi kamu.'));
+
+        if (pts.length >= 2) {
+          chart(c1, [{ data: pts.map(p => p.mem), color: '#5b8def' }], { fmt: v => bytes(v) });
+          chart(c2, [{ data: pts.map(p => p.cpu), color: '#e5484d' }], { max: 100 });
+        }
       } catch (e) { body.replaceChildren(el('div', { class: 'empty' }, e.message)); }
     }
 

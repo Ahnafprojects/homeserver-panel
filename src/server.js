@@ -184,6 +184,19 @@ collect();
 // console.log biasa, bukan SSE — ini jalan di belakang layar tanpa ada
 // koneksi drawer yang lagi dibuka user.
 setInterval(() => autoscale.tick((l) => console.log(l)).catch(() => {}), 20000);
+
+// Sampling RAM/CPU tiap instance basis data tiap 60 detik — dipakai grafik
+// di tab Overview (dbaas.recordSample/getHistory). Interval lebih jarang
+// dari autoscale di atas karena ini cuma buat grafik, bukan aksi otomatis
+// yang butuh reaksi cepat.
+setInterval(async () => {
+  for (const inst of dbaas.listInstances()) {
+    try {
+      const s = await docker.statsOnce(inst.container);
+      dbaas.recordSample(inst.id, { mem: memUsage(s).used, cpu: cpuPercent(s) });
+    } catch {}
+  }
+}, 60000);
 setInterval(() => {
   fs.writeFile(HIST_FILE, JSON.stringify(history.slice(-HISTORY_MAX))).catch(() => {});
   fs.writeFile(HOURLY_FILE, JSON.stringify(hourlyHistory.slice(-HOURLY_MAX))).catch(() => {});
@@ -844,6 +857,9 @@ const requestHandler = async (req, res) => {
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/logs$/))) {
         return ok(res, { log: await dbaas.logs(m[1], +q.get('n') || 200) });
+      }
+      if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/history$/))) {
+        return ok(res, { history: dbaas.getHistory(m[1]) });
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/overview$/))) {
         const inst = dbaas.getInstance(m[1]);

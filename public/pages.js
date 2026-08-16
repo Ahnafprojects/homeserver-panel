@@ -32,7 +32,13 @@ VIEWS.stacks = () => {
     container.style.position = 'relative';
     const box = el('div', { style: 'position:absolute;inset:0;padding:6px' });
     container.append(box);
-    const term = new Terminal({ fontSize: 12, fontFamily: 'ui-monospace,Menlo,monospace',
+    // Sama kayak fontSizeFor di fitur Terminal utama — 12px tetap kekecilan
+    // di drawer yang sekarang sudah lebih lebar (lihat .drawer.wide), dan
+    // TUI kayak Claude Code butuh cukup kolom biar ketikan/layar-nya
+    // kegambar bener, bukan cuma nyempil di kotak kecil.
+    const fontSizeFor = () => innerWidth < 560 ? 12.5 : innerWidth < 820 ? 13.5 : 15;
+    let curFontSize = fontSizeFor();
+    const term = new Terminal({ fontSize: curFontSize, fontFamily: 'ui-monospace,Menlo,monospace',
       cursorBlink: true, scrollback: 3000,
       theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
     const fitAddon = new FitAddon.FitAddon();
@@ -46,17 +52,25 @@ VIEWS.stacks = () => {
     sock.onclose = () => term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
     term.onData(d => sock.readyState === 1 && sock.send(d));
     term.onResize(({ rows, cols }) => sock.readyState === 1 && sock.send(`\x00resize:${rows},${cols}`));
-    const ro = new ResizeObserver(() => { try { fitAddon.fit(); } catch {} });
+    const ro = new ResizeObserver(() => {
+      const fs = fontSizeFor();
+      if (fs !== curFontSize) { curFontSize = fs; term.options.fontSize = fs; }
+      try { fitAddon.fit(); } catch {}
+    });
     ro.observe(box);
+    box.onclick = () => term.focus();
     timers.push({ close: () => { ro.disconnect(); sock?.close(); term?.dispose(); } });
     setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 30);
   }
 
   function logDrawer(title, stackName) {
-    const box = el('div', { class: 'logbox', style: `height:${stackName ? '48vh' : '70vh'}` });
+    // Drawer normal (660px) kekecilan buat jalanin CLI TUI kayak Claude Code
+    // di terminalnya — lebarin drawer-nya juga, bukan cuma tinggi kotaknya.
+    $('#drawer').classList.toggle('wide', !!stackName);
+    const box = el('div', { class: 'logbox', style: `height:${stackName ? '40vh' : '70vh'}` });
     const children = [box];
     if (stackName) {
-      const termWrap = el('div', { style: 'display:none;height:26vh;margin-top:8px;'
+      const termWrap = el('div', { style: 'display:none;height:38vh;margin-top:8px;'
         + 'border-radius:8px;overflow:hidden;background:#0b0c0f' });
       let started = false;
       const btnTerm = el('button', { class: 'btn', style: 'margin-top:8px',
@@ -66,8 +80,10 @@ VIEWS.stacks = () => {
         termWrap.style.display = open2 ? 'block' : 'none';
         btnTerm.querySelector('span').textContent = open2
           ? 'Tutup Terminal' : 'Buka Terminal di folder stack ini';
+        // Muncul lagi dari display:none -> block sudah cukup buat memicu
+        // ResizeObserver di dalam embedTerminal sendiri (ukurannya berubah
+        // dari 0x0 ke ukuran sebenarnya) — tidak perlu dipicu manual di sini.
         if (open2 && !started) { started = true; embedTerminal(termWrap, stackName); }
-        else if (open2) { setTimeout(() => window.dispatchEvent(new Event('resize')), 30); }
       };
       children.push(btnTerm, termWrap);
     }

@@ -54,7 +54,7 @@ function openDrawer(title, body) {
   $('#drawer').classList.add('on'); $('#scrim').classList.add('on');
 }
 function closeDrawer() {
-  $('#drawer').classList.remove('on'); $('#scrim').classList.remove('on');
+  $('#drawer').classList.remove('on', 'wide'); $('#scrim').classList.remove('on');
 }
 $('#scrim').onclick = closeDrawer;
 addEventListener('keydown', e => e.key === 'Escape' && closeDrawer());

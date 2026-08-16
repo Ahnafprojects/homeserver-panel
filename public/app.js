@@ -949,7 +949,11 @@ VIEWS.files = () => {
   const VIDEO_EXT = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i;
   const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
   const PDF_EXT = /\.pdf$/i;
-  const NO_PREVIEW_EXT = /\.(psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
+  // docx/xlsx/dst juga biner (format ZIP di baliknya) — tanpa ini kena
+  // fallback "baca sebagai teks" yang sama seperti bug PDF sebelumnya
+  // (sampah/gagal, bukan pesan yang jelas). Browser tidak punya viewer
+  // Office bawaan seperti PDF, jadi cukup ditawarkan unduh yang rapi.
+  const NO_PREVIEW_EXT = /\.(psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg|docx?|xlsx?|pptx?|odt|ods|odp)$/i;
   // Buat thumbnail grid/list (server.js /api/files/thumb) — svg/ico sengaja
   // tidak dimasukkan (vektor, sudah kecil & tajam apa adanya). Video ikut
   // (server ambil 1 frame via ffmpeg) — sebelumnya video selalu ikon

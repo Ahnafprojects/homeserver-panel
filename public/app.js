@@ -247,6 +247,77 @@ function go(id) {
   VIEWS[id]?.();
 }
 
+/* ═══════════ Global search (Ctrl/Cmd+K) ═══════════
+   Cari lintas stack/container/database/halaman sekaligus, tanpa perlu tau
+   dulu di halaman mana sesuatu itu ada. Dibangun sekali (lazy, pas dipakai
+   pertama kali), bukan bagian dari VIEWS[] biasa -- ini overlay GLOBAL yang
+   harus tetap kepencet dari halaman mana pun, bukan konten satu halaman. */
+let searchOverlay = null, searchInput = null, searchResults = null, searchSelIdx = -1, searchDebounce = null;
+const SEARCH_ICON = { stack: 'rocket', container: 'box', database: 'db', page: 'chevron' };
+
+function paintSearchSel(items) {
+  items.forEach((it, i) => { it.style.background = i === searchSelIdx ? 'var(--surface-2, rgba(255,255,255,.06))' : ''; });
+}
+function buildSearchPalette() {
+  if (searchOverlay) return;
+  searchInput = el('input', { placeholder: 'Cari stack, container, database, halaman…',
+    style: 'width:100%;font-size:14px;padding:14px 16px;border:none;border-bottom:1px solid var(--line);'
+      + 'background:transparent;color:var(--tx);outline:none;box-sizing:border-box' });
+  searchResults = el('div', { style: 'max-height:360px;overflow-y:auto' });
+  const box = el('div', { style: 'background:var(--surface);border:1px solid var(--line);border-radius:12px;'
+    + 'width:min(560px,92vw);margin:12vh auto 0;box-shadow:0 20px 60px rgba(0,0,0,.5);overflow:hidden' },
+    searchInput, searchResults);
+  searchOverlay = el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:none' }, box);
+  searchOverlay.onclick = (e) => { if (e.target === searchOverlay) closeSearch(); };
+  document.body.append(searchOverlay);
+
+  searchInput.oninput = () => { clearTimeout(searchDebounce); searchDebounce = setTimeout(runSearch, 200); };
+  searchInput.onkeydown = (e) => {
+    const items = [...searchResults.children];
+    if (e.key === 'ArrowDown') { e.preventDefault(); if (items.length) { searchSelIdx = (searchSelIdx + 1) % items.length; paintSearchSel(items); items[searchSelIdx].scrollIntoView({ block: 'nearest' }); } }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); if (items.length) { searchSelIdx = (searchSelIdx - 1 + items.length) % items.length; paintSearchSel(items); items[searchSelIdx].scrollIntoView({ block: 'nearest' }); } }
+    else if (e.key === 'Enter') { e.preventDefault(); items[searchSelIdx]?.click(); }
+    else if (e.key === 'Escape') { closeSearch(); }
+  };
+}
+async function runSearch() {
+  const term = searchInput.value.trim();
+  searchSelIdx = -1;
+  if (!term) { searchResults.replaceChildren(); return; }
+  try {
+    const { results } = await api('/search?q=' + encodeURIComponent(term));
+    if (!results.length) {
+      searchResults.replaceChildren(el('div', { style: 'padding:16px;color:var(--tx-3);font-size:12.5px' }, 'Tidak ada hasil.'));
+      return;
+    }
+    searchResults.replaceChildren(...results.map((r) => {
+      const row = el('div', { class: 'row', style: 'padding:10px 16px;cursor:pointer;gap:10px;border-top:1px solid var(--line)' },
+        el('span', { html: ic(SEARCH_ICON[r.type] || 'search', 15) }),
+        el('div', { style: 'flex:1;min-width:0' },
+          el('div', { style: 'font-size:13px' }, r.label),
+          r.sub ? el('div', { style: 'font-size:11px;color:var(--tx-3)' }, r.sub) : ''),
+        el('span', { class: 'pill' }, r.type));
+      row.onclick = () => { closeSearch(); go(r.page); };
+      row.onmouseenter = () => { searchSelIdx = [...searchResults.children].indexOf(row); paintSearchSel([...searchResults.children]); };
+      return row;
+    }));
+  } catch { searchResults.replaceChildren(el('div', { style: 'padding:16px;color:var(--bad)' }, 'Gagal mencari.')); }
+}
+function openSearch() {
+  buildSearchPalette();
+  searchOverlay.style.display = 'block';
+  searchInput.value = ''; searchResults.replaceChildren(); searchSelIdx = -1;
+  setTimeout(() => searchInput.focus(), 20);
+}
+function closeSearch() { if (searchOverlay) searchOverlay.style.display = 'none'; }
+addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (searchOverlay && searchOverlay.style.display === 'block') closeSearch(); else openSearch();
+  }
+});
+$('#searchBtn')?.addEventListener('click', openSearch);
+
 const VIEWS = {};
 
 /* Sub-tab dalam satu pages. */

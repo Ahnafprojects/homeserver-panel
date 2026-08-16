@@ -824,6 +824,44 @@ const requestHandler = async (req, res) => {
       if (p === '/api/system/stats') {
         return ok(res, lastStats || (await sys.snapshot()));
       }
+      // Global search (Cmd/Ctrl+K) — cari lintas stacks/containers/database/
+      // halaman sekaligus. Tiap kategori difilter permission-nya sendiri
+      // (canPage/canDb), bukan digerbang di level AREA di atas -- Viewer
+      // yang gak punya izin "stacks" misalnya, ga bakal ketemu hasil stack
+      // sama sekali, bukan cuma disembunyiin di UI doang.
+      if (p === '/api/search') {
+        const term = (q.get('q') || '').toLowerCase().trim();
+        if (!term) return ok(res, { results: [] });
+        const results = [];
+        if (auth.canPage(ses, 'stacks')) {
+          for (const s of await stacks.listStacks()) {
+            if (s.name.toLowerCase().includes(term)) {
+              results.push({ type: 'stack', label: s.name, sub: s.source, page: 'stacks' });
+            }
+          }
+        }
+        if (auth.canPage(ses, 'containers')) {
+          for (const c of await docker.listContainers()) {
+            const name = (c.Names?.[0] || '').replace(/^\//, '');
+            if (name.toLowerCase().includes(term) || (c.Image || '').toLowerCase().includes(term)) {
+              results.push({ type: 'container', label: name, sub: c.Image, page: 'containers' });
+            }
+          }
+        }
+        if (auth.canPage(ses, 'database')) {
+          for (const inst of dbaas.listInstances().filter((x) => auth.canDb(ses, x.id))) {
+            if (inst.name.toLowerCase().includes(term)) {
+              results.push({ type: 'database', label: inst.name, sub: inst.engine, page: 'database' });
+            }
+          }
+        }
+        for (const [id, label] of Object.entries(auth.PAGES)) {
+          if (auth.canPage(ses, id) && label.toLowerCase().includes(term)) {
+            results.push({ type: 'page', label, sub: 'Halaman', page: id });
+          }
+        }
+        return ok(res, { results: results.slice(0, 40) });
+      }
       if (p === '/api/system/history') {
         const RANGE_MS = { '30m': 1.8e6, '1h': 3.6e6, '4h': 1.44e7, '1d': 8.64e7,
           '7d': 6.048e8, '30d': 2.592e9, '90d': 7.776e9, '1y': 3.1536e10 };

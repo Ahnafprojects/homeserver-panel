@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage, netStats } from './docker.js';
 import { makeSeriesStore } from './historyStore.js';
 import * as registryCheck from './registryCheck.js';
+import * as apiTokens from './apiTokens.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -663,7 +664,20 @@ const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup', '
 
 function sessionOf(req) {
   const t = cookieOf(req, 'sid');
-  return t ? auth.getSession(t) : null;
+  if (t) return auth.getSession(t);
+  // Fallback: token API (Authorization: Bearer hsp_...) buat script/CI
+  // eksternal yang gak punya cookie sesi browser sama sekali. Dapet
+  // permission YANG SAMA kayak user pembuatnya (role-nya, bukan sesi
+  // terpisah) -- token cuma "cara masuk" alternatif, bukan identitas baru.
+  const authz = req.headers.authorization || '';
+  if (authz.startsWith('Bearer ')) {
+    const rec = apiTokens.verify(authz.slice(7).trim());
+    if (!rec) return null;
+    const u = auth.findUser(rec.username);
+    if (!u) return null;
+    return { uid: u.id, username: u.username, role: u.role, viaToken: true };
+  }
+  return null;
 }
 
 // ── Router ──────────────────────────────────────────────────────────────────
@@ -751,6 +765,26 @@ const requestHandler = async (req, res) => {
         const good = !!u && auth.verifyPassword(b.password || '', u.pass);
         if (!good) { auth.noteFail(ip); return fail(res, 'Wrong password', 401); }
         auth.noteOk(ip);
+        return ok(res);
+      }
+
+      // Token API — buat script/CI eksternal manggil API panel tanpa cookie
+      // sesi browser. Tiap user kelola token-nya SENDIRI (bukan lintas
+      // user), dan token itu punya permission YANG SAMA kayak user
+      // pembuatnya (bukan sistem scope terpisah).
+      if (p === '/api/tokens' && req.method === 'GET') {
+        return ok(res, { tokens: apiTokens.list(ses.username) });
+      }
+      if (p === '/api/tokens' && req.method === 'POST') {
+        const b = await readJson(req);
+        const rec = apiTokens.create(ses.username, b.label);
+        auth.audit(ses.username, 'token-buat', rec.label);
+        return ok(res, rec); // satu-satunya kesempatan token mentahnya kekirim
+      }
+      if ((m = p.match(/^\/api\/tokens\/([^/]+)$/)) && req.method === 'DELETE') {
+        const removed = apiTokens.revoke(ses.username, m[1]);
+        if (!removed) return fail(res, 'Token not found', 404);
+        auth.audit(ses.username, 'token-cabut', m[1]);
         return ok(res);
       }
 

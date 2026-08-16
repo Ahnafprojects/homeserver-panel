@@ -990,12 +990,64 @@ VIEWS.settings = () => {
   mount(wrap);
 
   async function load() {
-    const [me, users, sess, aud, tun] = await Promise.all([
+    const [me, users, sess, aud, tun, toks] = await Promise.all([
       api('/auth/state'), api('/auth/users').catch(() => ({ users: [] })),
       api('/auth/sessions').catch(() => ({ sessions: [], bans: [] })),
       api('/auth/audit?n=120').catch(() => ({ entries: [] })),
       api('/tunnel/sites').catch(() => ({ sites: [] })),
+      api('/tokens').catch(() => ({ tokens: [] })),
     ]);
+
+    /* API tokens — buat script/CI eksternal manggil API panel tanpa cookie
+       sesi browser. Token mentah cuma kelihatan SEKALI pas dibuat. */
+    const tokTb = el('tbody', {}, ...toks.tokens.map((t) => {
+      const del = el('button', { class: 'ib', title: 'Cabut', html: ic('trash', 14) });
+      del.onclick = async () => {
+        if (!confirm(`Cabut token "${t.label}"? Script yang masih pakai token ini bakal langsung berhenti kerja.`)) return;
+        try { await api('/tokens/' + t.id, { method: 'DELETE' }); toast('Token dicabut'); load(); }
+        catch (e) { toast(e.message); }
+      };
+      return el('tr', {}, el('td', {}, t.label),
+        el('td', { style: 'color:var(--tx-3)' }, ago(t.created)),
+        el('td', { style: 'color:var(--tx-3)' }, t.lastUsed ? ago(t.lastUsed) : 'belum pernah dipakai'),
+        el('td', {}, del));
+    }));
+    const newTokBtn = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Token baru</span>' });
+    newTokBtn.onclick = () => {
+      const label = el('input', { placeholder: 'mis. "CI deploy script"' });
+      const b = el('button', { class: 'btn pri' }, 'Buat');
+      b.onclick = async () => {
+        if (!label.value.trim()) return toast('Nama wajib diisi');
+        b.disabled = true;
+        try {
+          const rec = await api('/tokens', { method: 'POST', body: JSON.stringify({ label: label.value.trim() }) });
+          const box = el('textarea', { readonly: '', rows: '3',
+            style: 'font-family:var(--mono);font-size:12px;white-space:pre-wrap;word-break:break-all;margin:10px 0' });
+          box.value = rec.token;
+          const cp = el('button', { class: 'btn' }, 'Copy');
+          cp.onclick = () => { navigator.clipboard?.writeText(rec.token); toast('Disalin'); };
+          openDrawer('Token dibuat', el('div', {},
+            el('div', { style: 'font-size:12px;color:var(--bad);margin-bottom:10px;font-weight:600' },
+              'Simpan sekarang — ga bakal ditampilin lagi setelah ini ditutup.'),
+            box, el('div', { class: 'row' }, cp),
+            el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6' },
+              'Pakai lewat header: ', el('span', { class: 'mono' }, 'Authorization: Bearer <token>'),
+              '. Permission-nya sama persis kayak akunmu sekarang.')));
+          load();
+        } catch (e) { toast(e.message); } finally { b.disabled = false; }
+      };
+      openDrawer('Token API baru', el('div', {},
+        el('div', { class: 'field' }, el('label', {}, 'Nama (buat inget dipakai apa)'), label),
+        el('div', { class: 'row' }, b)));
+    };
+    const tokensSection = el('div', {},
+      el('div', { class: 'card' },
+        el('div', { class: 'tbl-wrap', style: 'max-height:26vh' },
+          toks.tokens.length
+            ? el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Nama'),
+                el('th', {}, 'Dibuat'), el('th', {}, 'Terakhir dipakai'), el('th', {}, ''))), tokTb)
+            : el('div', { class: 'empty', style: 'padding:22px' }, 'Belum ada token.')),
+        el('div', { class: 'card-b' }, newTokBtn)));
 
     /* Akses SSH dari luar — kartu referensi doang (caranya suka lupa),
        cari entri tunnel proto tcp port 22 yang dibikinkan lewat Cloudflare
@@ -1260,6 +1312,7 @@ VIEWS.settings = () => {
 
     wrap.replaceChildren(
       el('div', { class: 'sec' }, 'Two-factor authentication'), twoFA,
+      el('div', { class: 'sec' }, 'API tokens'), tokensSection,
       ...(sshCard ? [el('div', { class: 'sec' }, 'Akses SSH dari luar'), sshCard] : []),
       el('div', { class: 'sec' }, `Users (${users.users.length})`),
       el('div', { class: 'card' },

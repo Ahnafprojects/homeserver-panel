@@ -2000,6 +2000,49 @@ const requestHandler = async (req, res) => {
             auth.audit(ses.username, 'deploy', name + ' code=' + c);
             ev.emit(c === 0 ? 'deploy.success' : 'deploy.failed',
               `Stack <code>${name}</code>${c === 0 ? ' berhasil di-deploy.' : ` gagal (kode ${c}).`}`, { key: name });
+            // Auto-rollback: deploy "berhasil" (exit 0) TAPI container-nya
+            // langsung crash/exit setelah nyala -- ini kejadian umum kalau
+            // env var/config baru salah, code-nya sendiri gak error pas
+            // build. Cuma buat stack dari git (rollback butuh commit
+            // sebelumnya buat balik ke situ).
+            if (c === 0) {
+              const meta = await stacks.readStack(name).catch(() => null);
+              if (meta?.source === 'git') {
+                await new Promise((r) => setTimeout(r, 5000));
+                // --all WAJIB di sini -- tanpa itu, "docker compose ps"
+                // cuma nunjukin container yang MASIH jalan; container yang
+                // udah crash & exit (justru kasus utama yang mau ditangkap)
+                // malah HILANG dari daftar sama sekali, bukan kelihatan
+                // "stopped" -- health check jadi ga pernah nangkep apa-apa.
+                const { out } = await stacks.runP('docker', ['compose', 'ps', '--all', '--format', 'json'],
+                  { cwd: stacks.dirOf(name) });
+                const rows = out.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+                const unhealthy = rows.length === 0 || rows.some((o) => !/running|up/i.test(o.State || o.Status || ''));
+                if (unhealthy) {
+                  const log = await stacks.gitLog(name, 2);
+                  // Hash commit git itu selalu hex 40 karakter (atau versi
+                  // pendeknya) -- validasi ini sebelum dipakai, karena
+                  // gitLog() bisa balikin baris pesan ERROR git (bukan
+                  // commit beneran) kalau git-nya sendiri gagal jalan
+                  // (masalah permission/ownership, dst), dan itu JANGAN
+                  // sampai kepakai jadi "ref" buat checkout.
+                  if (log[1] && /^[0-9a-f]{7,40}$/i.test(log[1].hash)) {
+                    send(`$ container tidak sehat 5 detik setelah deploy — rollback otomatis ke ${log[1].hash}`);
+                    const co = await stacks.gitCheckout(name, log[1].hash, send);
+                    if (co !== 0) {
+                      send('$ rollback GAGAL — git checkout error, deploy TIDAK diulang biar tidak makin kacau');
+                      ev.emit('deploy.failed', `Auto-rollback <code>${name}</code> gagal — git checkout error.`, { key: name });
+                    } else {
+                      const c2 = await stacks.deploy(name, send);
+                      ev.emit(c2 === 0 ? 'deploy.rollback' : 'deploy.failed',
+                        `Stack <code>${name}</code> di-rollback OTOMATIS ke <code>${log[1].hash}</code> — `
+                        + `deploy sebelumnya bikin container-nya crash.`, { key: name });
+                      auth.audit('system', 'auto-rollback', `${name} -> ${log[1].hash}`);
+                    }
+                  }
+                }
+              }
+            }
             return done(c);
           }
           if (action === 'autodeploy') {

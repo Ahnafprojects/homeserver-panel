@@ -184,10 +184,16 @@ export const gitPull = async (name, onLine) => {
   return new Promise((resolve) => { e.onLine = onLine; e.onDone = resolve; });
 };
 export const gitCheckout = (name, ref, onLine) => new Promise((resolve) => {
-  if (!/^[A-Za-z0-9._\/-]{1,120}$/.test(String(ref || ''))) {
+  // Karakter pertama TIDAK BOLEH "-" -- itu satu-satunya yang mencegah ref
+  // ditafsir jadi flag (mis. "--upload-pack=...") oleh git. Sebelumnya
+  // dicegah pakai "git checkout -- ref", tapi itu artinya beda total:
+  // "--" bikin git nafsirin semua argumen SETELAHNYA sebagai PATH file,
+  // bukan nama branch/commit -- jadi checkout ke commit/branch APAPUN
+  // selalu gagal ("did not match any file(s)"), bukan cuma yang jahat.
+  if (!/^[A-Za-z0-9._\/][A-Za-z0-9._\/-]{0,119}$/.test(String(ref || ''))) {
     onLine?.('ERROR: invalid ref'); resolve(1); return;
   }
-  const e = run('git', ['checkout', '--', ref], { cwd: dirOf(name) });
+  const e = run('git', ['checkout', ref], { cwd: dirOf(name) });
   e.onLine = onLine; e.onDone = resolve;
 });
 export async function gitLog(name, n = 20) {

@@ -4,6 +4,7 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -371,6 +372,27 @@ const mimeOf = (f) => MIME[path.extname(f).toLowerCase()] || 'application/octet-
 const execFileP = promisify(execFile);
 const THUMB_EXT = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
 const THUMB_CACHE = path.join(STATE_DIR, 'thumb-cache');
+
+// Buka folder isi ratusan foto HEIC dulu bikin CPU 100% (load average
+// sampai belasan di laptop 4 thread ini) — browser nembak banyak thumbnail
+// sekaligus dan tiap satu decode HEIC (libheif) itu berat. Antrean ini
+// membatasi cuma N magick yang jalan BERSAMAAN (sisanya nunggu giliran,
+// bukan dibuang), dan tiap proses dijalankan low-priority (nice + ionice
+// idle, sama seperti server-backup) biar panel & container lain tidak
+// ikut lemot walau lagi ada banyak thumbnail yang diproses.
+const THUMB_MAX_CONCURRENT = Math.max(1, Math.min(2, os.cpus().length - 1));
+let thumbRunning = 0;
+const thumbQueue = [];
+function thumbSlot() {
+  return new Promise((resolve) => {
+    const take = () => { thumbRunning++; resolve(() => {
+      thumbRunning--;
+      const next = thumbQueue.shift();
+      if (next) next();
+    }); };
+    if (thumbRunning < THUMB_MAX_CONCURRENT) take(); else thumbQueue.push(take);
+  });
+}
 
 // ── Basis data ──────────────────────────────────────────────────────────────
 const pools = new Map();
@@ -1965,17 +1987,25 @@ const server = http.createServer(async (req, res) => {
           return fsSync.createReadStream(cacheFile).pipe(res);
         };
         try { return await serve(); } catch {}
+        const release = await thumbSlot();
         try {
+          // Cek lagi setelah antre — job lain yang antre di depan kita
+          // buat FILE & SIZE yang sama bisa saja sudah selesai duluan.
+          try { return await serve(); } catch {}
           await fs.mkdir(THUMB_CACHE, { recursive: true });
           // [0]: ambil frame/halaman pertama saja (HEIC burst, GIF animasi,
           // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
           // perbesar file yang sudah lebih kecil dari ukuran diminta.
-          await execFileP('magick', [`${f}[0]`, '-auto-orient',
-            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile], { timeout: 20000 });
+          // nice+ionice idle: proses berat ini tidak boleh rebutan CPU/disk
+          // sama panel sendiri atau container lain.
+          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'magick', `${f}[0]`, '-auto-orient',
+            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile], { timeout: 30000 });
           return await serve();
         } catch (e) {
           console.error('[thumb]', f, e.message);
           return fail(res, 'Gagal membuat thumbnail', 500);
+        } finally {
+          release();
         }
       }
       if (p === '/api/files/upload' && req.method === 'POST') {

@@ -926,9 +926,6 @@ VIEWS.files = () => {
   // Firefox/Chrome di Linux tidak punya decoder-nya, beda dari iPhone/Safari)
   // → tawarkan unduh saja daripada nampilin sampah biner.
   const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
-  // Buat thumbnail grid/list — svg/ico sengaja tidak dimasukkan (vektor,
-  // sudah kecil & tajam apa adanya, tidak perlu di-convert).
-  const THUMB_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif)$/i;
   // HEIC/HEIF (default kamera iPhone) tidak bisa didekode browser mana pun
   // di Linux — bukan cuma kotak file putih kosong lagi, sekarang di-convert
   // ke JPEG di server (ImageMagick + libheif, lihat /api/files/thumb) baik
@@ -937,6 +934,11 @@ VIEWS.files = () => {
   const VIDEO_EXT = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i;
   const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
   const NO_PREVIEW_EXT = /\.(psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
+  // Buat thumbnail grid/list (server.js /api/files/thumb) — svg/ico sengaja
+  // tidak dimasukkan (vektor, sudah kecil & tajam apa adanya). Video ikut
+  // (server ambil 1 frame via ffmpeg) — sebelumnya video selalu ikon
+  // generik, gak ada bedanya sama file lain yang memang gak bisa di-preview.
+  const THUMB_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif|mp4|webm|ogv|mov|m4v|mkv)$/i;
   async function open(it) {
     const full = (cwd ? cwd + '/' : '') + it.name;
     if (it.dir) { cwd = full; return load(); }

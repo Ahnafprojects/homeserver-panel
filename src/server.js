@@ -370,7 +370,11 @@ const mimeOf = (f) => MIME[path.extname(f).toLowerCase()] || 'application/octet-
 // beda dari Safari/iOS) — jadi ini satu-satunya cara nampilin isi foto
 // aslinya, bukan cuma ikon generik atau kotak putih kosong.
 const execFileP = promisify(execFile);
-const THUMB_EXT = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
+const THUMB_IMG_EXT = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
+// ffmpeg ambil satu frame video jadi thumbnail — sebelumnya video (231 dari
+// 448 file di folder testing) sama sekali tidak kena regex thumbnail lama,
+// jadi selalu ikon generik walau file gambarnya (heic) sendiri sudah beres.
+const THUMB_VIDEO_EXT = /\.(mp4|m4v|mov|webm|mkv|ogv)$/i;
 const THUMB_CACHE = path.join(STATE_DIR, 'thumb-cache');
 
 // Buka folder isi ratusan foto HEIC dulu bikin CPU 100% (load average
@@ -1981,7 +1985,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/files/thumb') {
         const f = safePath(q.get('path'), q.get('root'));
-        if (!THUMB_EXT.test(f)) return fail(res, 'Format tidak didukung buat thumbnail', 415);
+        const isVideo = THUMB_VIDEO_EXT.test(f);
+        if (!isVideo && !THUMB_IMG_EXT.test(f)) return fail(res, 'Format tidak didukung buat thumbnail', 415);
         const st = await fs.stat(f);
         const size = Math.min(Math.max(+q.get('size') || 200, 40), 1600);
         const key = crypto.createHash('sha1')
@@ -2000,21 +2005,33 @@ const server = http.createServer(async (req, res) => {
           // buat FILE & SIZE yang sama bisa saja sudah selesai duluan.
           try { return await serve(); } catch {}
           await fs.mkdir(THUMB_CACHE, { recursive: true });
-          // [0]: ambil frame/halaman pertama saja (HEIC burst, GIF animasi,
-          // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
-          // perbesar file yang sudah lebih kecil dari ukuran diminta.
           // nice+ionice idle: proses berat ini tidak boleh rebutan CPU/disk
           // sama panel sendiri atau container lain. taskset -c: kunci ke SATU
-          // core fisik (lihat THUMB_CPU) — -limit thread 1 saja tidak cukup
-          // karena decoder HEIC punya thread pool sendiri di luar kendali
-          // ImageMagick. Dua-duanya dipasang: taskset jadi jaring pengaman
+          // core fisik (lihat THUMB_CPU) — buat gambar, -limit thread 1 saja
+          // di ImageMagick tidak cukup karena decoder HEIC punya thread pool
+          // sendiri di luar kendali ImageMagick. taskset jadi jaring pengaman
           // keras (total CPU thumbnail tidak pernah lebih dari 1 core, apa
-          // pun library yang dipakai), -limit thread 1 mengurangi kerja
-          // sia-sia ImageMagick sendiri buat spawn banyak thread di 1 core itu.
-          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'taskset', '-c', THUMB_CPU,
-            'magick', '-limit', 'thread', '1', `${f}[0]`, '-auto-orient',
-            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile],
-            { timeout: 30000 });
+          // pun library yang dipakai/berapa pun thread yang dia buka sendiri).
+          const prefix = ['-n', '15', 'ionice', '-c3', 'taskset', '-c', THUMB_CPU];
+          if (isVideo) {
+            // -ss SEBELUM -i: seek cepat ke keyframe terdekat tanpa decode
+            // dari awal video — jauh lebih ringan buat file besar. 0.5 detik
+            // buat lewatin kemungkinan frame hitam paling awal; kalau video
+            // lebih pendek dari itu (percobaan pertama gagal), ulang dari
+            // frame paling awal tanpa seek sama sekali.
+            const args = (ss) => [...prefix, 'ffmpeg', '-v', 'error', ...(ss ? ['-ss', ss] : []),
+              '-i', f, '-frames:v', '1', '-vf', `scale=${size}:${size}:force_original_aspect_ratio=decrease`,
+              '-q:v', '4', '-y', cacheFile];
+            try { await execFileP('nice', args('00:00:00.5'), { timeout: 30000 }); }
+            catch { await execFileP('nice', args(null), { timeout: 30000 }); }
+          } else {
+            // [0]: ambil frame/halaman pertama saja (HEIC burst, GIF animasi,
+            // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
+            // perbesar file yang sudah lebih kecil dari ukuran diminta.
+            await execFileP('nice', [...prefix, 'magick', '-limit', 'thread', '1', `${f}[0]`,
+              '-auto-orient', '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile],
+              { timeout: 30000 });
+          }
           return await serve();
         } catch (e) {
           console.error('[thumb]', f, e.message);

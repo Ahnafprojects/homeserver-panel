@@ -18,15 +18,16 @@ RUN apk add --no-cache --virtual .build-deps python3 make g++ \
 # docker-cli + compose      -> deploy stack
 # git                       -> clone/pull/checkout dari web
 # util-linux (nsenter)      -> terminal host & perintah daya
-# imagemagick(-heic/-jpeg)  -> thumbnail Files, termasuk HEIC (foto iPhone) —
-#                              paket biner jadi, tidak perlu kompilasi apa pun.
-#                              imagemagick-jpeg WAJIB ada terpisah — paket
-#                              dasar imagemagick Alpine TIDAK linked ke
-#                              libjpeg sama sekali (cuma PNG/GIF), tanpa ini
-#                              semua thumbnail "jpg" yang dihasilkan
-#                              sebenarnya bukan JPEG asli.
+# imagemagick(-heic/-jpeg)  -> thumbnail Files buat gambar, termasuk HEIC
+#                              (foto iPhone) — paket biner jadi, tidak perlu
+#                              kompilasi apa pun. imagemagick-jpeg WAJIB ada
+#                              terpisah — paket dasar imagemagick Alpine
+#                              TIDAK linked ke libjpeg sama sekali (cuma
+#                              PNG/GIF), tanpa ini semua thumbnail "jpg" yang
+#                              dihasilkan sebenarnya bukan JPEG asli.
+# ffmpeg                    -> thumbnail Files buat video (ambil 1 frame)
 RUN apk add --no-cache docker-cli docker-cli-compose git util-linux openssh-client ca-certificates \
-    postgresql17-client mariadb-client imagemagick imagemagick-heic imagemagick-jpeg
+    postgresql17-client mariadb-client imagemagick imagemagick-heic imagemagick-jpeg ffmpeg
 
 COPY src ./src
 COPY public ./public

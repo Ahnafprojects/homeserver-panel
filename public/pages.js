@@ -935,11 +935,39 @@ VIEWS.settings = () => {
   mount(wrap);
 
   async function load() {
-    const [me, users, sess, aud] = await Promise.all([
+    const [me, users, sess, aud, tun] = await Promise.all([
       api('/auth/state'), api('/auth/users').catch(() => ({ users: [] })),
       api('/auth/sessions').catch(() => ({ sessions: [], bans: [] })),
       api('/auth/audit?n=120').catch(() => ({ entries: [] })),
+      api('/tunnel/sites').catch(() => ({ sites: [] })),
     ]);
+
+    /* Akses SSH dari luar — kartu referensi doang (caranya suka lupa),
+       cari entri tunnel proto tcp port 22 yang dibikinkan lewat Cloudflare
+       Tunnel (lihat tunnel.js) daripada nge-hardcode hostname-nya di sini. */
+    const sshSite = (tun.sites || []).find(s => s.proto === 'tcp' && s.port === 22);
+    const sshCard = sshSite ? (() => {
+      const snippet = `Host ahnaf-server\n    HostName ${sshSite.hostname}\n`
+        + `    User ahnaf\n    ProxyCommand cloudflared access ssh --hostname %h`;
+      const box = el('textarea', { readonly: '', rows: '4',
+        style: 'font-family:var(--mono);font-size:11.5px;white-space:pre' });
+      box.value = snippet;
+      const cp = el('button', { class: 'btn' }, 'Copy config');
+      cp.onclick = () => { navigator.clipboard?.writeText(snippet); toast('Copied'); };
+      return el('div', { class: 'card' }, el('div', { class: 'card-b' },
+        el('div', { style: 'font-size:12px;color:var(--tx-2);margin-bottom:10px;line-height:1.6' },
+          `Hostname: `, el('span', { class: 'mono' }, sshSite.hostname),
+          el('br'), 'Lewat Cloudflare Tunnel, bukan port biasa — device yang mau ',
+          'connect wajib install ', el('span', { class: 'mono' }, 'cloudflared'), ' dulu (sekali, gratis).'),
+        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:4px' },
+          '1. Install cloudflared di device itu'),
+        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:4px' },
+          '2. Tempel ini ke ~/.ssh/config:'),
+        box,
+        el('div', { class: 'row', style: 'margin-top:8px;margin-bottom:4px' }, cp),
+        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:8px' },
+          '3. Jalankan: ', el('span', { class: 'mono' }, 'ssh ahnaf-server'))));
+    })() : null;
     const mine = users.users.find(u => u.username === me.user?.username);
 
     /* 2FA */
@@ -1135,6 +1163,7 @@ VIEWS.settings = () => {
 
     wrap.replaceChildren(
       el('div', { class: 'sec' }, 'Two-factor authentication'), twoFA,
+      ...(sshCard ? [el('div', { class: 'sec' }, 'Akses SSH dari luar'), sshCard] : []),
       el('div', { class: 'sec' }, `Users (${users.users.length})`),
       el('div', { class: 'card' },
         el('div', { class: 'tbl-wrap', style: 'max-height:30vh' },

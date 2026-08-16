@@ -131,6 +131,12 @@ function composeFor(name, det, { port, envVars = {} }) {
   // kernel (lalu otomatis nyala lagi karena restart: unless-stopped),
   // bukan laptopnya yang macet total kehabisan RAM.
   const memLimit = isRuntime ? '768m' : '256m';
+  // Batas CPU, simetris sama batas RAM di atas — laptop ini cuma 4 core
+  // dipakai bareng panel & stack lain. Tanpa ini satu app yang lagi sibuk
+  // (loop tak sengaja, traffic tinggi) bisa nyekek CPU semua container lain
+  // termasuk panel-nya sendiri. Bukan hard-kill kayak RAM — kernel cuma
+  // membagi jatah CPU-nya, app tetap jalan tapi dipelankan kalau kepentok.
+  const cpuLimit = isRuntime ? '2' : '0.5';
 
   // "${name}" dikutip — nama stack yang bisa dipilih user (nama folder,
   // dsb) kadang berupa angka murni (mis. "333"). Tanpa tanda kutip, YAML
@@ -138,7 +144,7 @@ function composeFor(name, det, { port, envVars = {} }) {
   // menolaknya: "non-string key in services: 333".
   const appService = `  "${name}":\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
     + (isRuntime ? '' : `    ports:\n      - "${port}:${svcPort}"\n`)
-    + `${envBlock}    mem_limit: ${memLimit}\n    restart: unless-stopped\n`;
+    + `${envBlock}    mem_limit: ${memLimit}\n    cpus: "${cpuLimit}"\n    restart: unless-stopped\n`;
 
   if (!isRuntime) return `services:\n${appService}`;
 
@@ -149,7 +155,7 @@ function composeFor(name, det, { port, envVars = {} }) {
   // restart (habis kena OOM-kill, atau lagi update).
   const lbService = `  "${name}-lb":\n    image: nginx:alpine\n    ports:\n      - "${port}:80"\n`
     + `    volumes:\n      - ./nginx-lb.conf:/etc/nginx/conf.d/default.conf:ro\n`
-    + `    depends_on:\n      - "${name}"\n    mem_limit: 64m\n    restart: unless-stopped\n`;
+    + `    depends_on:\n      - "${name}"\n    mem_limit: 64m\n    cpus: "0.5"\n    restart: unless-stopped\n`;
   return `services:\n${appService}${lbService}`;
 }
 

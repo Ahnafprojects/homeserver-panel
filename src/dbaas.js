@@ -231,42 +231,41 @@ export async function logs(id, tail = 200) {
   return r.out;
 }
 
+/* Ukuran mentah dalam byte (bukan string terformat) — biar bisa dijumlah
+   buat overview gabungan (semua instance), bukan cuma ditampilin sendiri-
+   sendiri. Pemanggil yang format ke KB/MB/GB (fungsi bytes() di frontend). */
 export async function sizeOf(id) {
   const i = getInstance(id);
   const e = ENGINES[i.engine];
   try {
     if (e.kind === 'postgres') {
       const r = await runP('docker', ['exec', i.container, 'psql', '-U', i.user,
-        '-d', i.database, '-tAc', 'SELECT pg_size_pretty(pg_database_size(current_database()))']);
-      return r.out.trim() || null;
+        '-d', i.database, '-tAc', 'SELECT pg_database_size(current_database())']);
+      const n = parseInt(r.out.trim(), 10);
+      return Number.isFinite(n) ? n : null;
     }
     if (e.kind === 'mysql') {
       const r = await runP('docker', ['exec', '-e', `MYSQL_PWD=${i.password}`, i.container, 'mysql',
         '-u', i.user, '-N', '-e',
         `SELECT ROUND(SUM(data_length+index_length)) FROM information_schema.tables WHERE table_schema='${i.database}'`]);
-      const bytes = parseInt(r.out.trim(), 10);
-      return Number.isFinite(bytes) ? prettyBytes(bytes) : null;
+      const n = parseInt(r.out.trim(), 10);
+      return Number.isFinite(n) ? n : null;
     }
     if (i.engine === 'mongo') {
       const r = await runP('docker', ['exec', i.container, 'mongosh', '--quiet', i.database,
         '--eval', 'db.stats().dataSize']);
-      const bytes = parseFloat(r.out.trim());
-      return Number.isFinite(bytes) ? prettyBytes(bytes) : null;
+      const n = parseFloat(r.out.trim());
+      return Number.isFinite(n) ? n : null;
     }
     if (i.engine === 'redis') {
       const r = await runP('docker', ['exec', i.container, 'redis-cli', '-a', i.password,
         '--no-auth-warning', 'INFO', 'memory']);
       const m = r.out.match(/used_memory:(\d+)/);
-      return m ? prettyBytes(+m[1]) : null;
+      return m ? +m[1] : null;
     }
     return null;
   } catch { return null; }
 }
-const prettyBytes = (n) => {
-  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
-  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
-};
 
 /* Counter transaksi/query KUMULATIF langsung dari mesin basis datanya
    sendiri — beda dari queryStats() di bawah (yang cuma nyatet kueri lewat

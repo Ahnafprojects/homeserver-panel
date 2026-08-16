@@ -828,6 +828,38 @@ const requestHandler = async (req, res) => {
         Object.entries(dbaas.ENGINES).map(([k, v]) => ({ id: k, label: v.label,
           versions: v.versions, port: v.port, note: v.note, kind: v.kind })) });
 
+      // Overview GABUNGAN — semua instance sekaligus (beda dari
+      // /api/db/instances/:id/overview yang cuma satu). Dipakai kartu
+      // ringkasan di puncak halaman Databases.
+      if (p === '/api/db/overview' && req.method === 'GET') {
+        const all = (await dbaas.withStatus()).filter(x => auth.canDb(ses, x.id));
+        const perEngine = {};
+        for (const inst of all) perEngine[inst.engine] = (perEngine[inst.engine] || 0) + 1;
+        let totalSize = 0, totalMem = 0, totalMemLimit = 0, totalConn = 0, totalReq = 0;
+        let sizeKnown = 0, connKnown = 0;
+        await Promise.all(all.map(async (inst) => {
+          const [size, conn] = await Promise.all([
+            dbaas.sizeOf(inst.id).catch(() => null),
+            dbaas.connectionCount(inst.id).catch(() => null),
+          ]);
+          if (size != null) { totalSize += size; sizeKnown++; }
+          if (conn != null) { totalConn += conn; connKnown++; }
+          if (inst.state === 'running') {
+            try {
+              const s = await docker.statsOnce(inst.container);
+              totalMem += memUsage(s).used; totalMemLimit += memUsage(s).limit || 0;
+            } catch {}
+          }
+          const hist = dbaas.getHistory(inst.id).filter(p2 => p2.req != null);
+          if (hist.length >= 2) totalReq += Math.max(0, hist[hist.length - 1].req - hist[0].req);
+        }));
+        return ok(res, {
+          total: all.length, running: all.filter(x => x.state === 'running').length,
+          perEngine, totalSize: sizeKnown ? totalSize : null,
+          totalMem, totalMemLimit: totalMemLimit || null,
+          totalConn: connKnown ? totalConn : null, totalReq,
+        });
+      }
       if (p === '/api/db/instances') {
         if (req.method === 'GET') {
           const all = await dbaas.withStatus();

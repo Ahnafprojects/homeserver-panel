@@ -7,8 +7,34 @@ VIEWS.database = () => {
 
   const wrap = el('div');
   const search = searchBox('Cari basis data…', v => { qText = v; renderList(); });
-  mount(el('div', {}, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
+  // Overview GABUNGAN (semua instance) — beda dari tab "Overview" di
+  // dalam satu instance (yang cuma database itu doang). Ini ringkasan
+  // level "home server database" secara keseluruhan.
+  const fleetArea = el('div', { style: 'margin-bottom:14px' });
+  mount(el('div', {}, fleetArea, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   liveBadge(20);
+
+  async function paintFleet() {
+    try {
+      const f = await api('/db/overview');
+      if (!f.total) { fleetArea.replaceChildren(); return; }
+      const memPct = f.totalMemLimit ? Math.round((f.totalMem / f.totalMemLimit) * 100) : null;
+      const stat = (key, icon, val, meta) => el('div', { class: 'stat' },
+        el('div', { class: 'k', html: ic(icon, 12) + `<span>${key}</span>` }),
+        el('div', { class: 'v', html: val }), meta ? el('div', { class: 'm' }, meta) : '');
+      const engineList = Object.entries(f.perEngine).map(([k, n]) => `${n} ${k}`).join(', ');
+      fleetArea.replaceChildren(
+        el('div', { class: 'sec' }, 'Overview semua basis data'),
+        el('div', { class: 'stats' },
+          stat('Instance', 'db', f.total, `${f.running} running · ${engineList}`),
+          stat('Total ukuran', 'disk', f.totalSize != null ? bytes(f.totalSize) : '—', 'gabungan semua instance'),
+          stat('Total RAM', 'ram', memPct != null ? `${memPct}<small>%</small>` : (f.totalMem ? bytes(f.totalMem) : '—'),
+            f.totalMemLimit ? `${bytes(f.totalMem)} / ${bytes(f.totalMemLimit)}` : ''),
+          stat('Koneksi aktif', 'net', f.totalConn != null ? f.totalConn : '—', 'gabungan semua instance'),
+          stat('Total Requests', 'pulse', f.totalReq, '3 jam terakhir, gabungan')));
+    } catch { fleetArea.replaceChildren(); }
+  }
+  every(paintFleet, 20000);
   addAction('Sambungkan yang ada', 'net', () => formExternal());
   addAction('Basis data baru', 'plus', () => formCreate(), 'btn pri');
   addAction('Refresh', 'refresh', () => load());
@@ -105,6 +131,7 @@ VIEWS.database = () => {
 
   /* ── Daftar instance ── */
   function renderList() {
+    fleetArea.style.display = '';
     if (!list.length && !external.length) {
       wrap.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'empty',
         html: ic('db', 30, 1.3) + '<div>No databases yet</div>'
@@ -362,6 +389,7 @@ VIEWS.database = () => {
 
   /* ── Kelola satu instance ── */
   function renderDetail() {
+    fleetArea.style.display = 'none';
     const i = sel;
     let tables = [], curDb = i.database, cols = [], curTable = null;
 
@@ -544,7 +572,7 @@ VIEWS.database = () => {
             stat('Status', 'pulse',
               o.state === 'running' ? 'Running' : (o.state || 'unknown'),
               o.statusText || ''),
-            stat('Ukuran', 'db', o.size || '—', `${o.engine} ${o.version}`),
+            stat('Ukuran', 'db', o.size != null ? bytes(o.size) : '—', `${o.engine} ${o.version}`),
             stat('Memory', 'ram', memPct != null ? `${memPct}<small>%</small>` : '—',
               o.memLimit ? `${bytes(o.memUsed)} / ${bytes(o.memLimit)}` : 'tidak terbaca', memPct),
             stat('CPU', 'cpu', `${o.cpuPercent ?? 0}<small>%</small>`, 'saat ini'),

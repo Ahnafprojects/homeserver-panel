@@ -8,7 +8,8 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage } from './docker.js';
+import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage, netStats } from './docker.js';
+import { makeSeriesStore } from './historyStore.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -212,6 +213,26 @@ setInterval(async () => {
       req: gotReq ? fleetReq : null });
   }
 }, 60000);
+
+// Sampling RAM/CPU/network tiap CONTAINER (bukan cuma basis data) tiap 60
+// detik — dipakai grafik custom di halaman Containers, mekanisme sama
+// persis kayak database (historyStore.js). rx/tx kumulatif sejak container
+// nyala, jadi pemanggil yang ngitung selisih (sama kayak "requests").
+const containerSeries = makeSeriesStore('container-history', ['rx', 'tx']);
+setInterval(async () => {
+  let list = [];
+  try { list = await docker.listContainers(); } catch { return; }
+  for (const c of list) {
+    if (c.State !== 'running') continue;
+    try {
+      const s = await docker.statsOnce(c.Id);
+      const { used } = memUsage(s);
+      const { rx, tx } = netStats(s);
+      containerSeries.record(c.Id, { mem: used, cpu: cpuPercent(s), rx, tx });
+    } catch {}
+  }
+}, 60000);
+
 setInterval(() => {
   fs.writeFile(HIST_FILE, JSON.stringify(history.slice(-HISTORY_MAX))).catch(() => {});
   fs.writeFile(HOURLY_FILE, JSON.stringify(hourlyHistory.slice(-HOURLY_MAX))).catch(() => {});
@@ -2071,6 +2092,11 @@ const requestHandler = async (req, res) => {
         out.sort((a, b) => (a.state === b.state ? a.name.localeCompare(b.name)
           : a.state === 'running' ? -1 : 1));
         return ok(res, { containers: out });
+      }
+
+      if ((m = p.match(/^\/api\/containers\/([^/]+)\/history$/))) {
+        return ok(res, { history: containerSeries.get(m[1], { range: q.get('range'),
+          from: +q.get('from') || null, to: +q.get('to') || null }) });
       }
 
       if ((m = p.match(/^\/api\/containers\/([^/]+)\/(start|stop|restart|remove)$/))) {

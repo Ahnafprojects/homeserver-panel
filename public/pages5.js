@@ -3,26 +3,27 @@
    ubah baris, dan jalankan SQL — semuanya dari web. */
 
 /* Blok grafik yang bisa di-custom (pilih metrik & rentang waktu) — dipakai
-   BERSAMA oleh overview per-instance dan overview gabungan (fleet), cukup
-   beda fetchHistory(range)-nya. Mirip "custom report" di dashboard
-   Supabase: checkbox metrik + dropdown rentang, tiap metrik yang dicentang
-   dapet kartu grafiknya sendiri (skalanya beda-beda, jadi sengaja tidak
-   ditumpuk satu sumbu). storageKey biar pilihan kepilih tetap diingat
-   (localStorage) tiap buka lagi, per konteks (per-instance vs fleet beda). */
-function customChartBlock(fetchHistory, storageKey) {
-  const METRICS = [
-    { id: 'mem', label: 'Memory', color: '#5b8def', fmt: (v) => bytes(v) },
-    { id: 'cpu', label: 'CPU %', color: '#e5484d', max: 100 },
-    { id: 'req', label: 'Requests (per titik)', color: '#3dbb7d', delta: true },
-    { id: 'conn', label: 'Koneksi aktif', color: '#d99b1c' },
-  ];
-  const RANGE_LABELS = { '30m': '30 menit', '1h': '1 jam', '4h': '4 jam',
+   BARENG di overview per-instance database, overview gabungan (fleet), DAN
+   riwayat backup, cukup beda fetchHistory(range) & daftar metrik-nya. Mirip
+   "custom report" di dashboard Supabase: checkbox metrik + dropdown
+   rentang, tiap metrik yang dicentang dapet kartu grafiknya sendiri
+   (skalanya beda-beda, jadi sengaja tidak ditumpuk satu sumbu). storageKey
+   biar pilihan kepilih tetap diingat (localStorage), per konteks. */
+const DB_METRICS = [
+  { id: 'mem', label: 'Memory', color: '#5b8def', fmt: (v) => bytes(v) },
+  { id: 'cpu', label: 'CPU %', color: '#e5484d', max: 100 },
+  { id: 'req', label: 'Requests (per titik)', color: '#3dbb7d', delta: true },
+  { id: 'conn', label: 'Koneksi aktif', color: '#d99b1c' },
+];
+function customChartBlock(fetchHistory, storageKey, opts = {}) {
+  const METRICS = opts.metrics || DB_METRICS;
+  const RANGE_LABELS = opts.rangeLabels || { '30m': '30 menit', '1h': '1 jam', '4h': '4 jam',
     '1d': '1 hari', '7d': '7 hari', '30d': '1 bulan' };
 
-  let range = localStorage.getItem(storageKey + '.range') || '4h';
+  let range = localStorage.getItem(storageKey + '.range') || opts.defaultRange || '4h';
   let selected;
   try { selected = JSON.parse(localStorage.getItem(storageKey + '.metrics')); } catch {}
-  if (!Array.isArray(selected)) selected = ['mem', 'cpu', 'req'];
+  if (!Array.isArray(selected)) selected = opts.defaultMetrics || ['mem', 'cpu', 'req'];
 
   const rangeSel = el('select', { style: 'max-width:120px' },
     ...Object.entries(RANGE_LABELS).map(([k, l]) => el('option', { value: k }, l)));
@@ -59,8 +60,8 @@ function customChartBlock(fetchHistory, storageKey) {
       const m = METRICS.find((x) => x.id === id);
       let series;
       if (m.delta) {
-        const rp = pts.filter((p) => p.req != null);
-        series = rp.slice(1).map((p, idx) => Math.max(0, p.req - rp[idx].req));
+        const rp = pts.filter((p) => p[id] != null);
+        series = rp.slice(1).map((p, idx) => Math.max(0, p[id] - rp[idx][id]));
       } else {
         series = pts.map((p) => p[id]).filter((v) => v != null);
       }

@@ -7,6 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { docker } from './docker.js';
 import { runP } from './stacks.js';
+import { makeSeriesStore } from './historyStore.js';
 
 const STATE = process.env.STATE_DIR || '/state';
 const FILE = path.join(STATE, 'databases.json');
@@ -341,99 +342,13 @@ export function memLimitOf(id) {
 }
 
 /* ══ Riwayat RAM/CPU/Requests/Koneksi ════════════════════════════════════════
-   Dua tingkat, sama persis pola yang dipakai statistik sistem (system/history
-   di server.js): detail (disampling tiap 60 detik dari server.js, disimpan
-   3 jam terakhir) buat rentang pendek, dan ringkasan per-jam (rata-rata)
-   yang tahan ~90 hari buat rentang lebih panjang — supaya grafik bisa
-   di-custom rentang waktunya tanpa nyimpen jutaan titik detail selamanya.
-   Satu mekanisme dipakai buat DUA hal: per-instance (key = id database) dan
-   gabungan/fleet (key = '_fleet' doang), lewat makeSeriesStore() di bawah. */
-const DETAIL_MAX = 180; // 3 jam @ 60 detik
-const HOURLY_MAX = 24 * 90; // ~90 hari
-const RANGE_MS = { '30m': 1.8e6, '1h': 3.6e6, '4h': 1.44e7, '1d': 8.64e7, '7d': 6.048e8, '30d': 2.592e9 };
-
-function makeSeriesStore(fileBase) {
-  const detailFile = path.join(STATE, fileBase + '.json');
-  const hourlyFile = path.join(STATE, fileBase + '-hourly.json');
-  let detail = {}, hourly = {}, buckets = {};
-  // db-fleet-history.json versi lama nyimpen ARRAY telanjang (satu seri
-  // doang, sebelum dipindah ke store yang sama-sama dipakai per-instance
-  // & fleet ini). Array vs object beda total buat JSON.stringify (array
-  // diam-diam BUANG properti bernama non-indeks kayak "_fleet") — kalau
-  // tidak dimigrasi di sini, data baru kelihatan "diterima" tapi ilang
-  // lagi tiap kali disimpan, seakan-akan kosong terus.
-  try {
-    const raw = JSON.parse(fs.readFileSync(detailFile, 'utf8'));
-    detail = Array.isArray(raw) ? { _fleet: raw } : raw;
-  } catch {}
-  try {
-    const raw = JSON.parse(fs.readFileSync(hourlyFile, 'utf8'));
-    hourly = Array.isArray(raw) ? { _fleet: raw } : raw;
-  } catch {}
-  let dirty = false;
-  setInterval(() => {
-    if (!dirty) return;
-    dirty = false;
-    try {
-      fs.mkdirSync(STATE, { recursive: true });
-      fs.writeFileSync(detailFile, JSON.stringify(detail));
-      fs.writeFileSync(hourlyFile, JSON.stringify(hourly));
-    } catch {}
-  }, 30000);
-
-  function rollup(key) {
-    const b = buckets[key];
-    if (!b || !b.samples.length) return;
-    const s = b.samples;
-    const avg = (k) => {
-      const vals = s.map(p => p[k]).filter(v => v != null);
-      return vals.length ? +(vals.reduce((a2, b2) => a2 + b2, 0) / vals.length).toFixed(2) : null;
-    };
-    if (!hourly[key]) hourly[key] = [];
-    // req/reqErr kumulatif, jadi diambil sample TERAKHIR di jam itu (bukan
-    // dirata-rata) — sama seperti cara pemanggil ngitung selisih di history
-    // detail (lihat viewOverview di pages5.js).
-    hourly[key].push({ t: b.hourStart, mem: avg('mem'), cpu: avg('cpu'), conn: avg('conn'),
-      req: s[s.length - 1].req ?? null, reqErr: s[s.length - 1].reqErr ?? null });
-    if (hourly[key].length > HOURLY_MAX) hourly[key].splice(0, hourly[key].length - HOURLY_MAX);
-  }
-
-  return {
-    record(key, sample) {
-      if (!detail[key]) detail[key] = [];
-      const point = { t: Date.now(), ...sample };
-      detail[key].push(point);
-      if (detail[key].length > DETAIL_MAX) detail[key].splice(0, detail[key].length - DETAIL_MAX);
-      const hourStart = Math.floor(point.t / 3600000) * 3600000;
-      if (!buckets[key] || buckets[key].hourStart !== hourStart) {
-        rollup(key);
-        buckets[key] = { hourStart, samples: [] };
-      }
-      buckets[key].samples.push(point);
-      dirty = true;
-    },
-    get(key, { range, from, to } = {}) {
-      const d = detail[key] || [], h = hourly[key] || [];
-      if (!range && !from) return d; // perilaku lama (tanpa param): 3 jam detail
-      const toT = to || Date.now();
-      const spanMs = from ? (toT - from) : RANGE_MS[range];
-      if (!spanMs) return d;
-      const since = from || (toT - spanMs);
-      const src = spanMs <= 3 * 3600000 ? d : h;
-      let out = src.filter(p => p.t >= since && p.t <= toT);
-      // Ringkasan per-jam baru ADA kalau minimal 1 jam sudah kelewat sejak
-      // mulai disampling (rollup terjadi pas jam berganti) — kalau belum,
-      // "h" kosong dan grafik rentang panjang bakal keliatan kosong total
-      // padahal ada data detail (cuma belum selebar yang diminta). Mending
-      // tunjukin data detail yang ada daripada grafik kosong.
-      if (out.length < 2 && src === h) out = d.filter(p => p.t >= since && p.t <= toT);
-      return out;
-    },
-  };
-}
-
-const dbSeries = makeSeriesStore('db-history');
-const fleetSeries = makeSeriesStore('db-fleet-history');
+   Dua tingkat (detail 3 jam + ringkasan per-jam ~90 hari) lewat
+   historyStore.js — dipakai bareng sama container (lihat containerHistory
+   di server.js), bukan cuma database. req/reqErr kumulatif (diambil
+   sample TERAKHIR pas rollup, bukan dirata-rata) karena pemanggil ngitung
+   SELISIH antar titik buat dapet "berapa banyak per menit". */
+const dbSeries = makeSeriesStore('db-history', ['req', 'reqErr']);
+const fleetSeries = makeSeriesStore('db-fleet-history', ['req', 'reqErr']);
 
 export function recordSample(id, sample) { dbSeries.record(id, sample); }
 export function getHistory(id, opts) { return dbSeries.get(id, opts); }

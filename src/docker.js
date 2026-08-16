@@ -113,6 +113,17 @@ export function memUsage(s) {
   } catch { return { used: 0, limit: 0 }; }
 }
 
+// Jumlah byte rx/tx KUMULATIF (sejak container nyala) dijumlah semua
+// interface jaringannya — dipakai grafik "network per menit" (pemanggil
+// yang ngitung selisih antar sampel, sama kayak requests database).
+export function netStats(s) {
+  try {
+    const nets = Object.values(s.networks || {});
+    return { rx: nets.reduce((a, n) => a + (n.rx_bytes || 0), 0),
+      tx: nets.reduce((a, n) => a + (n.tx_bytes || 0), 0) };
+  } catch { return { rx: 0, tx: 0 }; }
+}
+
 /* ── Image, volume, jaringan, exec ───────────────────────────────────────── */
 export const dockerExtra = {
   pullImage: (name) => request('POST', `/images/create?fromImage=${encodeURIComponent(name)}`, null, true),

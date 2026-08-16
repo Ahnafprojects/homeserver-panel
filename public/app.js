@@ -646,6 +646,18 @@ VIEWS.containers = () => {
           row('Dibuat', new Date(c.created).toLocaleString('id-ID')),
           row('Restart', d.HostConfig?.RestartPolicy?.Name || '—'),
           row('ID', c.id.slice(0, 12))))),
+        ...(c.state === 'running' ? [
+          el('div', { class: 'sec' }, 'Grafik custom'),
+          customChartBlock((range) => api(`/containers/${c.id}/history?range=${range}`), 'container.chart.' + c.id, {
+            metrics: [
+              { id: 'mem', label: 'Memory', color: '#5b8def', fmt: (v) => bytes(v) },
+              { id: 'cpu', label: 'CPU %', color: '#e5484d', max: 100 },
+              { id: 'rx', label: 'Network masuk (per titik)', color: '#3dbb7d', delta: true },
+              { id: 'tx', label: 'Network keluar (per titik)', color: '#d99b1c', delta: true },
+            ],
+            defaultMetrics: ['mem', 'cpu'],
+          }),
+        ] : []),
         el('div', { class: 'sec' }, 'Port'),
         portsCard,
         el('div', { class: 'sec' }, 'Domain publik'),

@@ -1974,6 +1974,7 @@ const server = http.createServer(async (req, res) => {
             '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile], { timeout: 20000 });
           return await serve();
         } catch (e) {
+          console.error('[thumb]', f, e.message);
           return fail(res, 'Gagal membuat thumbnail', 500);
         }
       }
@@ -2075,8 +2076,15 @@ const server = http.createServer(async (req, res) => {
     if (!full.startsWith(PUBLIC)) return fail(res, 'Forbidden', 403);
     try {
       const st = await fs.stat(full);
+      // Tanpa header cache sama sekali, browser sering nyimpen app.js/pages*.js
+      // lama sendiri (heuristik) dan tetap jalanin kode LAMA walau server
+      // sudah di-deploy ulang — fitur baru kelihatan "gak ada efeknya" padahal
+      // kodenya sudah benar, cuma belum ke-fetch ulang. vendor/ (Monaco,
+      // xterm — berat & jarang berubah) sengaja dikecualikan biar tetap
+      // boleh di-cache seperti biasa.
+      const isVendor = full.startsWith(path.join(PUBLIC, 'vendor') + path.sep);
       res.writeHead(200, { 'Content-Type': mimeOf(full) + (mimeOf(full).startsWith('text') ? '; charset=utf-8' : ''),
-        'Content-Length': st.size });
+        'Content-Length': st.size, ...(isVendor ? {} : { 'Cache-Control': 'no-store' }) });
       return fsSync.createReadStream(full).pipe(res);
     } catch {
       const idx = path.join(PUBLIC, 'index.html');

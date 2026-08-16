@@ -12,6 +12,7 @@ import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage } from './
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
+import * as autoscale from './autoscale.js';
 import * as admin from './admin.js';
 import * as ev from './events.js';
 import * as ai from './ai.js';
@@ -174,6 +175,11 @@ async function collect() {
 }
 setInterval(collect, 5000);
 collect();
+// Cek RAM tiap app hasil "Deploy otomatis" tiap 20 detik — nambah/kurangi
+// replika kalau perlu (lihat autoscale.js buat alasannya). Log dialirkan ke
+// console.log biasa, bukan SSE — ini jalan di belakang layar tanpa ada
+// koneksi drawer yang lagi dibuka user.
+setInterval(() => autoscale.tick((l) => console.log(l)).catch(() => {}), 20000);
 setInterval(() => {
   fs.writeFile(HIST_FILE, JSON.stringify(history.slice(-HISTORY_MAX))).catch(() => {});
   fs.writeFile(HOURLY_FILE, JSON.stringify(hourlyHistory.slice(-HOURLY_MAX))).catch(() => {});
@@ -1565,6 +1571,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (req.method === 'DELETE') {
           await stacks.removeStack(m[1]);
+          autoscale.unregister(m[1]);
           auth.audit(ses.username, 'stack-hapus', m[1]);
           return ok(res);
         }
@@ -1645,12 +1652,25 @@ const server = http.createServer(async (req, res) => {
             // Sekalian bikinkan subdomain publik lewat Cloudflare Tunnel —
             // ini tujuan utama "deploy otomatis": nggak ada langkah manual
             // tambahan buat bikin situsnya bisa diakses dari luar.
+            // App Node/Next.js sekarang berada di belakang service "-lb"
+            // (nginx) supaya bisa diperbanyak jadi beberapa replika tanpa
+            // tabrakan port (lihat autoscale.js) — daftarkan biar dipantau,
+            // TIDAK berlaku buat situs statis (nginx.conf sendiri, tidak
+            // pernah kebocor memori bikin autoscale relevan).
+            const isRuntime = det.type === 'next-server' || det.type === 'node';
+            if (c === 0 && isRuntime) autoscale.register(name, { service: name, dir: stacks.dirOf(name) });
+
             if (c === 0) {
               try {
                 const { out } = await stacks.runP('docker', ['compose', 'ps', '--format', 'json'],
                   { cwd: stacks.dirOf(name) });
-                const containerName = out.split('\n').filter(Boolean)
-                  .map(l => { try { return JSON.parse(l).Name; } catch { return null; } }).find(Boolean);
+                const names = out.split('\n').filter(Boolean)
+                  .map(l => { try { return JSON.parse(l).Name; } catch { return null; } }).filter(Boolean);
+                // Kalau ada service "-lb" (app runtime), itu yang publish
+                // port ke host — link/target harus nunjuk ke situ, bukan ke
+                // container app-nya (yang sekarang cuma bisa diakses lewat
+                // jaringan docker internal, tanpa port ke host sama sekali).
+                const containerName = names.find(n => n.includes(`${name}-lb`)) || names[0];
                 // Selalu disarangkan di bawah nama project (app.<nama-stack>.domain),
                 // bukan langsung di bawah domain utama — biar tidak semua
                 // service yang di-deploy kelihatan rata di satu tingkat.

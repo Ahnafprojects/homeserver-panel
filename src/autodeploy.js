@@ -100,6 +100,20 @@ function dockerfileFor(det, buildArgs = {}) {
 const NGINX_CONF = 'server {\n  listen 80;\n  root /usr/share/nginx/html;\n  index index.html;\n'
   + '  location / {\n    try_files $uri $uri/ /index.html;\n  }\n}\n';
 
+// Config nginx buat service "-lb" di depan app Node/Next.js — satu-satunya
+// yang publish port ke host, app-nya sendiri cuma bisa diakses lewat jaringan
+// docker internal. "resolver 127.0.0.11" (DNS bawaan docker) + $upstream
+// pakai variabel bikin nginx nge-lookup ulang nama service TIAP REQUEST
+// (bukan sekali pas start) — jadi begitu autoscale.js nambah/kurangi replika
+// app-nya (docker compose up --scale), nginx otomatis ikut kebagi traffic-nya
+// tanpa perlu di-restart atau di-reconfigure manual sama sekali.
+const lbConfFor = (name, svcPort) => 'resolver 127.0.0.11 valid=5s;\nserver {\n  listen 80;\n'
+  + '  location / {\n    set $upstream "http://' + name + ':' + svcPort + '";\n    proxy_pass $upstream;\n'
+  + '    proxy_http_version 1.1;\n    proxy_set_header Host $host;\n'
+  + '    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n'
+  + '    proxy_set_header X-Forwarded-Proto $scheme;\n'
+  + '    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection "upgrade";\n  }\n}\n';
+
 function composeFor(name, det, { port, envVars = {} }) {
   const svcPort = (det.type === 'next-server' || det.type === 'node') ? (det.port || 3000) : 80;
   const keys = Object.keys(envVars);
@@ -122,9 +136,21 @@ function composeFor(name, det, { port, envVars = {} }) {
   // dsb) kadang berupa angka murni (mis. "333"). Tanpa tanda kutip, YAML
   // membaca "333:" sebagai KEY ANGKA, bukan teks, dan docker compose
   // menolaknya: "non-string key in services: 333".
-  return `services:\n  "${name}":\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
-    + `    ports:\n      - "${port}:${svcPort}"\n${envBlock}`
-    + `    mem_limit: ${memLimit}\n    restart: unless-stopped\n`;
+  const appService = `  "${name}":\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
+    + (isRuntime ? '' : `    ports:\n      - "${port}:${svcPort}"\n`)
+    + `${envBlock}    mem_limit: ${memLimit}\n    restart: unless-stopped\n`;
+
+  if (!isRuntime) return `services:\n${appService}`;
+
+  // App Node/Next.js: bukan app-nya sendiri yang publish port ke host, tapi
+  // nginx "-lb" di depannya — supaya app-nya bisa diperbanyak jadi beberapa
+  // replika (autoscale.js) tanpa tabrakan port, dan traffic tetap kebagi
+  // rata ke replika mana pun yang masih hidup kalau salah satunya lagi
+  // restart (habis kena OOM-kill, atau lagi update).
+  const lbService = `  "${name}-lb":\n    image: nginx:alpine\n    ports:\n      - "${port}:80"\n`
+    + `    volumes:\n      - ./nginx-lb.conf:/etc/nginx/conf.d/default.conf:ro\n`
+    + `    depends_on:\n      - "${name}"\n    mem_limit: 64m\n    restart: unless-stopped\n`;
+  return `services:\n${appService}${lbService}`;
 }
 
 /* Cari port host yang bebas, mulai dari 'from'.
@@ -169,6 +195,9 @@ export async function scaffold(dir, name, opts) {
   await fs.writeFile(path.join(dir, 'Dockerfile'), dockerfile);
   if (det.type === 'next-static' || det.type === 'static-build') {
     await fs.writeFile(path.join(dir, 'nginx.conf'), NGINX_CONF);
+  }
+  if (det.type === 'next-server' || det.type === 'node') {
+    await fs.writeFile(path.join(dir, 'nginx-lb.conf'), lbConfFor(name, det.port || 3000));
   }
   await fs.writeFile(path.join(dir, 'docker-compose.yml'), composeFor(name, det, opts));
   return det;

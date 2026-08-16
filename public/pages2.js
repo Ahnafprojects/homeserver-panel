@@ -577,6 +577,70 @@ VIEWS.vault = () => {
     }
     paintHdd();
 
+    // ── Off-site: Google Drive (multi-akun) ── connect langsung dari sini
+    // (OAuth), bukan setup CLI manual. Bisa lebih dari satu akun — kuota
+    // gratis cuma 15 GB tiap akun, jadi backup otomatis pindah ke akun yang
+    // masih longgar (lihat pickAccount() di gdrive.js / server-backup).
+    const gdriveArea = el('div', { style: 'margin-bottom:16px' });
+    async function paintGdrive() {
+      try {
+        const g = await api('/gdrive/accounts');
+        if (!g.configured) {
+          gdriveArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b',
+            style: 'font-size:11.5px;color:var(--tx-3)' },
+            'Belum diset (GDRIVE_CLIENT_ID/SECRET). Minta dibuatkan OAuth client di Google Cloud Console dulu.')));
+          return;
+        }
+        const connect = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Connect Google Drive</span>' });
+        connect.onclick = async () => {
+          connect.disabled = true;
+          try {
+            const { url } = await api('/gdrive/connect');
+            const win = window.open(url, 'gdrive-connect', 'width=520,height=680');
+            const onMsg = (e) => {
+              if (!e.data || typeof e.data.gdrive === 'undefined') return;
+              window.removeEventListener('message', onMsg);
+              toast(e.data.gdrive ? 'Akun tersambung' : 'Gagal menyambungkan');
+              paintGdrive();
+            };
+            window.addEventListener('message', onMsg);
+          } catch (e) { toast(e.message); } finally { connect.disabled = false; }
+        };
+        const rows = g.accounts.map((a) => {
+          const del = el('button', { class: 'ib', title: 'Disconnect', html: ic('trash', 14) });
+          del.onclick = async () => {
+            if (!confirm(`Putuskan akun "${a.email}"? Backup tidak akan sync ke akun ini lagi.`)) return;
+            await api('/gdrive/accounts/' + a.id, { method: 'DELETE' });
+            toast('Disconnected'); paintGdrive();
+          };
+          const pct = a.quota?.percent ?? 0;
+          return el('div', { class: 'row', style: 'padding:9px 0;border-top:1px solid var(--line);gap:10px' },
+            el('div', { style: 'flex:1;min-width:0' },
+              el('div', { style: 'font-size:12.5px' }, a.email),
+              a.quota
+                ? el('div', { style: 'font-size:11px;color:var(--tx-3)' },
+                    `${bytes(a.quota.used)} / ${a.quota.total ? bytes(a.quota.total) : 'unlimited'} (${pct}%)`)
+                : el('div', { style: 'font-size:11px;color:var(--bad)' }, a.error || 'Gagal cek kuota'),
+              a.quota?.total ? el('div', { class: 'bar', style: 'margin-top:4px' },
+                el('i', { style: `width:${Math.min(pct, 100)}%`,
+                  class: pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '' })) : ''),
+            del);
+        });
+        gdriveArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b' },
+          el('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px;margin-bottom:2px' },
+            el('span', { class: 'pill' + (g.accounts.length ? ' ok' : '') },
+              g.accounts.length ? `${g.accounts.length} akun tersambung` : 'Belum ada akun'),
+            el('span', { class: 'sp' }), connect),
+          ...rows,
+          el('div', { style: 'font-size:11px;color:var(--tx-3);margin-top:10px' },
+            'Snapshot backup harian di-sync (bukan ditumpuk) ke akun yang masih paling longgar.'))));
+      } catch {
+        gdriveArea.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3)' },
+          'Gagal cek status Google Drive.'));
+      }
+    }
+    paintGdrive();
+
     const total = backups.reduce((a, b2) => a + b2.size, 0);
     const countPill = el('span', { class: 'pill' }, `${backups.length} files`);
     const listArea = el('div');
@@ -615,6 +679,8 @@ VIEWS.vault = () => {
     body.replaceChildren(
       el('div', { class: 'sec' }, 'Backup otomatis ke HDD'),
       hddArea,
+      el('div', { class: 'sec' }, 'Off-site: Google Drive'),
+      gdriveArea,
       el('div', { class: 'sec' }, 'Backup manual'),
       el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
         countPill, el('span', { class: 'pill' }, bytes(total)),
@@ -622,8 +688,9 @@ VIEWS.vault = () => {
       listArea,
       el('div', { class: 'note' + '', style: 'margin-top:16px;font-size:11.5px;color:var(--tx-2);'
         + 'background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px 14px' },
-        'Backups live on the same server. If that disk fails, '
-        + 'the backups die with it — download them to another device regularly.'));
+        'Backup manual di atas & HDD otomatis di atasnya cuma disk terpisah, TAPI masih di laptop '
+        + 'yang sama — aman dari SSD rusak, tapi tidak dari kebakaran/kecurian/laptop hilang. '
+        + 'Google Drive di atas itu satu-satunya yang beneran di lokasi lain (off-site).'));
   }
 
   async function load() {

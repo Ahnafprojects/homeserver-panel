@@ -228,6 +228,20 @@ function vaultKey() {
 let secrets = load('secrets.json', []);
 const saveSecrets = () => save('secrets.json', secrets);
 
+// Dipakai modul lain (mis. gdrive.js) yang juga perlu nyimpen sesuatu
+// rahasia (token OAuth) tanpa bikin brankas/kunci terpisah sendiri-sendiri.
+export function encrypt(value) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv('aes-256-gcm', vaultKey(), iv);
+  const enc = Buffer.concat([c.update(String(value), 'utf8'), c.final()]);
+  return { iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), data: enc.toString('base64') };
+}
+export function decrypt(rec) {
+  const d = crypto.createDecipheriv('aes-256-gcm', vaultKey(), Buffer.from(rec.iv, 'base64'));
+  d.setAuthTag(Buffer.from(rec.tag, 'base64'));
+  return Buffer.concat([d.update(Buffer.from(rec.data, 'base64')), d.final()]).toString('utf8');
+}
+
 export function setSecret(name, value) {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
     throw new Error('Name must look like a variable, e.g. DB_PASSWORD');

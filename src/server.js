@@ -19,6 +19,7 @@ import * as ai from './ai.js';
 import * as proxy from './proxy.js';
 import * as tunnel from './tunnel.js';
 import * as dbaas from './dbaas.js';
+import * as gdrive from './gdrive.js';
 import * as dbapi from './dbapi.js';
 import { WebSocketServer } from 'ws';
 import * as sys from './system.js';
@@ -687,7 +688,7 @@ const requestHandler = async (req, res) => {
         [/^\/api\/db\//, ['database']],
         [/^\/api\/(sites|tunnel)/, ['domains']],
         [/^\/api\/jobs/, ['jobs']],
-        [/^\/api\/(secrets|backups)/, ['vault']],
+        [/^\/api\/(secrets|backups|gdrive)/, ['vault']],
         [/^\/api\/(images|volumes|networks|prune)/, ['resources']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
@@ -1607,6 +1608,44 @@ const requestHandler = async (req, res) => {
           snapshots: snapshots.slice(0, 10),
           dbDumpCount: dbNames.filter((n) => /\.(sql\.gz|archive\.gz|rdb)$/.test(n)).length,
         });
+      }
+
+      // ---- Google Drive (off-site backup, multi-akun) ----
+      if (p === '/api/gdrive/accounts' && req.method === 'GET') {
+        const list = gdrive.listAccounts();
+        const withQuota = await Promise.all(list.map(async (a) => {
+          try { return { ...a, quota: await gdrive.quotaOf(a.id) }; }
+          catch (e) { return { ...a, quota: null, error: e.message }; }
+        }));
+        return ok(res, { configured: gdrive.configured(), accounts: withQuota });
+      }
+      if (p === '/api/gdrive/connect' && req.method === 'GET') {
+        if (!gdrive.configured()) return fail(res, 'GDRIVE_CLIENT_ID/SECRET belum diset di server', 400);
+        return ok(res, { url: gdrive.authUrl(ses.username) });
+      }
+      if ((m = p.match(/^\/api\/gdrive\/accounts\/([^/]+)$/)) && req.method === 'DELETE') {
+        gdrive.removeAccount(m[1]);
+        auth.audit(ses.username, 'gdrive-disconnect', m[1]);
+        return ok(res);
+      }
+      // Redirect dari Google — BUKAN dipanggil lewat fetch() dari app.js,
+      // tapi navigasi browser biasa (makanya balikin HTML, bukan JSON).
+      if (p === '/api/gdrive/oauth/callback' && req.method === 'GET') {
+        const code = q.get('code'), err = q.get('error');
+        const closeTab = (msg, ok2) => {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          return res.end(`<!doctype html><body style="font-family:sans-serif;padding:40px;text-align:center">
+            <p>${esc(msg)}</p><script>
+              if (window.opener) { window.opener.postMessage({ gdrive: ${ok2 ? 'true' : 'false'} }, '*'); window.close(); }
+              else { setTimeout(() => location.href = '/', 2000); }
+            </script></body>`);
+        };
+        if (err) return closeTab('Otorisasi dibatalkan: ' + err, false);
+        try {
+          const acc = await gdrive.handleCallback(code);
+          auth.audit(ses?.username || '?', 'gdrive-connect', acc.email);
+          return closeTab(`Akun ${acc.email} berhasil disambungkan. Tab ini bisa ditutup.`, true);
+        } catch (e) { return closeTab('Gagal: ' + e.message, false); }
       }
 
       // ---- Stack: compose & git ----

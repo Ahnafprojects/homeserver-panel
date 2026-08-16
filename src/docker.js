@@ -63,9 +63,11 @@ export const docker = {
       `/containers/${id}/logs?stdout=1&stderr=1&follow=1&tail=${tail}&timestamps=0`,
       null, true),
 
+  // timestamps=1 -- dipakai buat search gabungan lintas container, biar
+  // hasil dari container beda-beda bisa diurut berdasar waktu asli.
   logsOnce: (id, tail = 500) =>
     request('GET',
-      `/containers/${id}/logs?stdout=1&stderr=1&follow=0&tail=${tail}`,
+      `/containers/${id}/logs?stdout=1&stderr=1&follow=0&tail=${tail}&timestamps=1`,
       null, true),
 
   listImages: () => request('GET', '/images/json'),

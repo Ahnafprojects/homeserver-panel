@@ -2128,6 +2128,39 @@ const requestHandler = async (req, res) => {
           return ok(res, { url: CONTAINER_LINKS[name] || null });
         }
       }
+      // Search lintas SEMUA container sekaligus (bukan satu-satu) — dipakai
+      // toggle "Cari di semua container" di halaman Logs.
+      if (p === '/api/containers/logs-search' && req.method === 'GET') {
+        const term = (q.get('q') || '').toLowerCase();
+        if (!term) return fail(res, 'Query kosong', 400);
+        const tail = Math.min(+q.get('tail') || 300, 1000);
+        const list = await docker.listContainers();
+        const running = list.filter((c) => c.State === 'running');
+        const results = [];
+        await Promise.all(running.map(async (c) => {
+          try {
+            const stream = await docker.logsOnce(c.Id, tail);
+            const chunks = [];
+            await new Promise((resolve, reject) => {
+              stream.on('data', (d) => chunks.push(d));
+              stream.on('end', resolve);
+              stream.on('error', reject);
+            });
+            const text = demuxDockerStream(Buffer.concat(chunks));
+            const name = (c.Names?.[0] || '').replace(/^\//, '');
+            for (const line of text.split('\n')) {
+              if (!line || !line.toLowerCase().includes(term)) continue;
+              // Format docker dengan timestamps=1: "2026-08-17T05:49:00.123Z sisa baris"
+              const m2 = line.match(/^(\S+)\s(.*)$/s);
+              const t = m2 ? Date.parse(m2[1]) : null;
+              results.push({ container: name, containerId: c.Id, t, line: m2 ? m2[2] : line });
+            }
+          } catch {}
+        }));
+        results.sort((a, b) => (b.t || 0) - (a.t || 0));
+        return ok(res, { results: results.slice(0, 500), containersSearched: running.length });
+      }
+
       if ((m = p.match(/^\/api\/containers\/([^/]+)\/logs$/))) {
         // Server-Sent Events: log mengalir langsung ke UI tanpa polling.
         res.writeHead(200, { 'Content-Type': 'text/event-stream',

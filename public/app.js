@@ -684,6 +684,7 @@ VIEWS.logs = () => {
   const filter = el('input', { placeholder: 'Saring baris…', style: 'max-width:200px' });
   const box = el('div', { class: 'logbox' });
   let es = null, lines = [], auto = true;
+  const ALL = '__all__'; // pilihan khusus: search lintas SEMUA container sekaligus
 
   const bar = el('div', { class: 'row', style: 'margin-bottom:10px' },
     el('div', { style: 'max-width:260px;flex:1' }, sel),
@@ -700,7 +701,40 @@ VIEWS.logs = () => {
   $('#actions').append(autoBtn);
   addAction('Clean', 'trash', () => { lines = []; render(); });
 
+  /* Mode "cari di semua container" — beda total dari mode stream biasa:
+     bukan nunggu log baru masuk, tapi nge-scan log yang SUDAH ADA di
+     semua container sekaligus, ngga ada hasil sampai user beneran ngetik
+     query (nyari string kosong di semua container itu berat & ga guna). */
+  let searchDebounce = null;
+  async function runAllSearch() {
+    const term = filter.value.trim();
+    if (!term) { box.replaceChildren(el('div', { class: 'empty' },
+      'Ketik kata kunci buat nyari di SEMUA container sekaligus (mis. "error", "ECONNREFUSED").')); return; }
+    box.replaceChildren(el('div', { class: 'empty' }, 'Nyari…'));
+    try {
+      const r = await api(`/containers/logs-search?q=${encodeURIComponent(term)}`);
+      if (!r.results.length) {
+        box.replaceChildren(el('div', { class: 'empty' },
+          `Tidak ada hasil di ${r.containersSearched} container yang lagi jalan.`));
+        return;
+      }
+      box.replaceChildren(...r.results.map((res) => {
+        const d = el('div', { class: 'l', style: 'display:flex;gap:8px' },
+          el('span', { style: 'color:var(--tx-3);white-space:nowrap;font-size:10.5px' },
+            (res.t ? new Date(res.t).toLocaleTimeString('id-ID') : '—')),
+          el('span', { class: 'pill', style: 'flex-shrink:0' }, res.container));
+        const lineSpan = el('span', {});
+        const i = res.line.toLowerCase().indexOf(term.toLowerCase());
+        if (i >= 0) lineSpan.append(res.line.slice(0, i), el('mark', {}, res.line.slice(i, i + term.length)), res.line.slice(i + term.length));
+        else lineSpan.textContent = res.line;
+        d.append(lineSpan);
+        return d;
+      }));
+    } catch (e) { box.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
   function render() {
+    if (sel.value === ALL) return; // ditangani runAllSearch(), bukan di sini
     const f = filter.value.trim().toLowerCase();
     const show = f ? lines.filter(l => l.toLowerCase().includes(f)) : lines;
     box.replaceChildren(...show.slice(-3000).map(l => {
@@ -713,11 +747,18 @@ VIEWS.logs = () => {
     }));
     if (auto) box.scrollTop = box.scrollHeight;
   }
-  filter.oninput = render;
+  filter.oninput = () => {
+    if (sel.value === ALL) {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(runAllSearch, 400);
+      return;
+    }
+    render();
+  };
 
   function connect(id) {
     es?.close(); lines = []; render();
-    if (!id) return;
+    if (!id || id === ALL) return;
     es = new EventSource(`/api/containers/${id}/logs?tail=300`);
     es.onmessage = e => {
       try { lines.push(JSON.parse(e.data)); } catch {}
@@ -726,11 +767,21 @@ VIEWS.logs = () => {
     };
     es.onerror = () => { lines.push('— koneksi log terputus —'); render(); };
   }
-  sel.onchange = () => connect(sel.value);
+  sel.onchange = () => {
+    if (sel.value === ALL) {
+      es?.close(); es = null; lines = [];
+      filter.placeholder = 'Cari di semua container… (mis. error)';
+      runAllSearch();
+      return;
+    }
+    filter.placeholder = 'Saring baris…';
+    connect(sel.value);
+  };
   window.__pickLog = id => { sel.value = id; connect(id); };
 
   api('/containers').then(({ containers }) => {
     sel.replaceChildren(el('option', { value: '' }, 'Pilih container…'),
+      el('option', { value: ALL }, '🔍 Cari di semua container'),
       ...containers.map(c => el('option', { value: c.id },
         `${c.name}${c.state === 'running' ? '' : '  (mati)'}`)));
     const first = containers.find(c => c.state === 'running');

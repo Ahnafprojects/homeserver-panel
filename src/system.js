@@ -47,6 +47,31 @@ export async function memory() {
   };
 }
 
+// Breakdown "apa yang paling makan disk" di level HOST (bukan cuma docker)
+// — folder data pengguna, stacks yang di-deploy, docker sendiri, backup,
+// log sistem, home user. Tiap folder dikasih timeout sendiri (15 detik)
+// biar satu folder gede yang lambat di-scan tidak bikin seluruh permintaan
+// menggantung — kalau timeout, baris itu dilewati (bukan gagal semua).
+const DISK_PATHS = [
+  { label: 'Files (/srv/data)', path: '/srv/data' },
+  { label: 'Stacks (/srv/stacks)', path: '/srv/stacks' },
+  { label: 'Docker (images, volume, dst)', path: '/var/lib/docker' },
+  { label: 'Backup HDD (/mnt/backup)', path: '/mnt/backup' },
+  { label: 'Log sistem (/var/log)', path: '/var/log' },
+  { label: 'Home user', path: '/home' },
+];
+export async function diskBreakdown() {
+  const out = [];
+  await Promise.all(DISK_PATHS.map(async ({ label, path: p }) => {
+    try {
+      const { stdout } = await exec('du', ['-sxb', `${ROOT}${p}`], { timeout: 15000 });
+      const bytesUsed = +stdout.trim().split(/\s+/)[0];
+      if (Number.isFinite(bytesUsed)) out.push({ label, path: p, bytes: bytesUsed });
+    } catch {} // folder tidak ada, atau timeout — dilewati aja
+  }));
+  return out.sort((a, b) => b.bytes - a.bytes);
+}
+
 export async function disk() {
   // Beberapa kandidat dicoba, lalu diambil yang totalnya paling besar.
   // Alasannya: di dalam container, "/" sering berupa overlay kecil yang

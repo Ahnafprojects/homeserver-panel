@@ -42,6 +42,10 @@ export const docker = {
   ping: () => request('GET', '/_ping'),
   info: () => request('GET', '/info'),
   version: () => request('GET', '/version'),
+  // Ringkasan cepat image/container/volume/build-cache — dipakai disk
+  // analyzer, jauh lebih cepat dari 'du' manual (docker sudah tau ukuran
+  // tiap layer dari metadatanya sendiri, tidak perlu jalan-jalan disk).
+  systemDf: () => request('GET', '/system/df'),
 
   listContainers: () => request('GET', '/containers/json?all=true'),
   inspect: (id) => request('GET', `/containers/${id}/json`),

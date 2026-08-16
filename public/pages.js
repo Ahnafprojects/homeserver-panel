@@ -697,6 +697,7 @@ VIEWS.resources = () => {
     { id: 'images', n: 'Image', i: 'layers' },
     { id: 'volumes', n: 'Volume', i: 'disk' },
     { id: 'networks', n: 'Network', i: 'net' },
+    { id: 'diskuse', n: 'Disk Analyzer', i: 'disk' },
     { id: 'cleanup', n: 'Cleanup', i: 'trash' },
   ], (id, body) => render(id, body));
   mount(T.node);
@@ -712,7 +713,33 @@ VIEWS.resources = () => {
     if (id === 'images') return renderImages(body);
     if (id === 'volumes') return renderVolumes(body);
     if (id === 'networks') return renderNetworks(body);
+    if (id === 'diskuse') return renderDiskAnalyzer(body);
     return renderCleanup(body);
+  }
+
+  /* ── Disk Analyzer: apa yang paling makan disk (host + docker) ── */
+  async function renderDiskAnalyzer(body) {
+    body.replaceChildren(el('div', { class: 'empty' }, 'Loading… (bisa beberapa detik, nge-scan folder)'));
+    try {
+      const r = await api('/disk-analysis');
+      const rows = [...r.host, ...r.docker].filter((x) => x.bytes > 0).sort((a, b) => b.bytes - a.bytes);
+      if (!rows.length) {
+        body.replaceChildren(el('div', { class: 'empty' }, 'Tidak ada data (semua folder kosong/gagal di-scan).'));
+        return;
+      }
+      const maxBytes = Math.max(...rows.map((x) => x.bytes));
+      const bar = (label, path2, bytesVal) => el('div', { style: 'padding:9px 0;border-top:1px solid var(--line)' },
+        el('div', { class: 'row', style: 'margin-bottom:5px' },
+          el('div', {}, el('div', { style: 'font-size:12.5px' }, label),
+            path2 ? el('div', { style: 'font-size:11px;color:var(--tx-3);font-family:var(--mono)' }, path2) : ''),
+          el('span', { class: 'sp' }), el('span', { style: 'font-size:12.5px;font-weight:600' }, bytes(bytesVal))),
+        el('div', { class: 'bar' }, el('i', { style: `width:${Math.round((bytesVal / maxBytes) * 100)}%` })));
+      body.replaceChildren(
+        el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
+          'Folder besar di host (files/stacks/docker/backup/log) + breakdown docker (image/volume/build cache), diurut dari yang paling makan disk.'),
+        el('div', { class: 'card' }, el('div', { class: 'card-b' },
+          ...rows.map((x) => bar(x.label, x.path, x.bytes)))));
+    } catch (e) { body.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
 
   /* ── Image ── */

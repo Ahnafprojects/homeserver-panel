@@ -759,7 +759,7 @@ const requestHandler = async (req, res) => {
         [/^\/api\/(sites|tunnel)/, ['domains']],
         [/^\/api\/jobs/, ['jobs']],
         [/^\/api\/(secrets|backups|gdrive)/, ['vault']],
-        [/^\/api\/(images|volumes|networks|prune)/, ['resources']],
+        [/^\/api\/(images|volumes|networks|prune|disk-analysis)/, ['resources']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
       ];
@@ -1980,6 +1980,20 @@ const requestHandler = async (req, res) => {
         if (b.buildCache) r.buildCache = await dockerExtra.pruneBuildCache();
         auth.audit(ses.username, 'prune', JSON.stringify(b));
         return ok(res, r);
+      }
+
+      // ---- Disk analyzer: apa yang paling makan disk, host + docker ----
+      if (p === '/api/disk-analysis' && req.method === 'GET') {
+        const [hostBreakdown, df] = await Promise.all([
+          sys.diskBreakdown(),
+          docker.systemDf().catch(() => null),
+        ]);
+        const dockerBreakdown = df ? [
+          { label: 'Docker: Images', bytes: (df.Images || []).reduce((a, i) => a + (i.Size || 0), 0) },
+          { label: 'Docker: Volumes', bytes: (df.Volumes || []).reduce((a, v) => a + (v.UsageData?.Size || 0), 0) },
+          { label: 'Docker: Build cache', bytes: (df.BuildCache || []).reduce((a, c) => a + (c.Size || 0), 0) },
+        ] : [];
+        return ok(res, { host: hostBreakdown, docker: dockerBreakdown });
       }
 
       if (p === '/api/volumes') {

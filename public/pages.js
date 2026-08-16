@@ -891,7 +891,13 @@ VIEWS.settings = () => {
       };
       const perm = el('button', { class: 'ib', title: 'Manage access', html: ic('lock', 14) });
       perm.onclick = async () => {
-        if (u.role === 'admin') return toast('Admin otomatis punya akses full');
+        // Super Admin selalu akses penuh (permsOf() di server mengabaikan
+        // .perms buat role ini), jadi tidak ada yang perlu dicentang.
+        // 'admin' BUKAN itu — cuma boleh ke halaman yang dicentang, sama
+        // seperti viewer, bedanya admin boleh mengubah di sana (viewer
+        // baca-saja). Dulu di sini ada blokir "admin otomatis akses full"
+        // yang salah — sisa dari skema role lama sebelum ada Super Admin.
+        if (u.role === 'superadmin') return toast('Super Admin selalu akses penuh');
         const [dbs, stacksList] = await Promise.all([
           api('/db/instances').catch(() => ({ instances: [], external: [] })),
           api('/stacks').catch(() => ({ stacks: [] }))]);

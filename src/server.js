@@ -631,19 +631,28 @@ const server = http.createServer(async (req, res) => {
       // Penjaga izin: tiap kelompok rute dipetakan ke satu halaman.
       // Anggota tim hanya bisa menyentuh yang diizinkan admin.
       const AREA = [
-        [/^\/api\/(system\/stats|system\/history|system\/info)/, ['overview']],
+        // "processes" ketinggalan sebelumnya — /api/system/processes/:pid/kill
+        // (matikan proses dari Task Manager di Overview) sempat bisa dipanggil
+        // siapa saja yang login, terlepas dari izin halamannya.
+        [/^\/api\/(system\/stats|system\/history|system\/info|system\/processes)/, ['overview']],
         [/^\/api\/events/, ['events']],
         [/^\/api\/monitor/, ['monitor']],
         [/^\/api\/ai\//, ['assistant']],
         [/^\/api\/stacks/, ['stacks']],
-        [/^\/api\/containers/, ['containers']],
+        // Aksi yang benar-benar mengubah container (nyala/mati/hapus/link)
+        // cuma buat yang punya izin "Containers" — TAPI daftar & log
+        // container-nya sendiri juga dipakai halaman Logs & Terminal buat
+        // dropdown pilih container, jadi baris di bawahnya sengaja lebih
+        // longgar (baca-baca saja, bukan kontrol).
+        [/^\/api\/containers\/[^/]+\/(start|stop|restart|remove|link)$/, ['containers']],
+        [/^\/api\/containers/, ['containers', 'logs', 'terminal', 'overview']],
         // Editor dan Files sama-sama sah membutuhkan baca/tulis berkas,
         // jadi rute ini menerima salah satu dari keduanya.
         [/^\/api\/files\/(workspaces|tree|search)/, ['editor']],
         [/^\/api\/files\/(read|write|create|mkdir|rename|delete|raw)/, ['editor', 'files']],
         [/^\/api\/files/, ['files']],
         [/^\/api\/db\//, ['database']],
-        [/^\/api\/sites/, ['domains']],
+        [/^\/api\/(sites|tunnel)/, ['domains']],
         [/^\/api\/jobs/, ['jobs']],
         [/^\/api\/(secrets|backups)/, ['vault']],
         [/^\/api\/(images|volumes|networks|prune)/, ['resources']],
@@ -2184,6 +2193,14 @@ server.on('upgrade', async (req, socket, head) => {
   const mm = cookie.match(/(?:^|;\s*)sid=([^;]+)/);
   const ses = mm ? auth.getSession(decodeURIComponent(mm[1])) : null;
   if (!ses) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+  // Ini satu-satunya jalur WebSocket di panel, jadi TIDAK lewat pemeriksaan
+  // AREA yang menjaga endpoint /api/* biasa — sebelumnya cuma dicek "sudah
+  // login", tanpa cek izin halaman "Terminal" sama sekali. Shell akar laptop
+  // bukan sesuatu yang boleh didapat siapa pun yang login (apalagi viewer,
+  // yang seharusnya baca-saja) — dicek eksplisit di sini.
+  if (!auth.canPage(ses, 'terminal') || !auth.canWrite(ses)) {
+    socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
+  }
 
   wss.handleUpgrade(req, socket, head, (ws) => {
   const target = u.searchParams.get('container');

@@ -10,6 +10,7 @@
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { runP } from './stacks.js';
+import * as ev from './events.js';
 
 const STATE = process.env.STATE_DIR || '/state';
 const FILE = path.join(STATE, 'autoscale.json');
@@ -85,7 +86,9 @@ async function tickOne(name, t, memPercents, onLine) {
   if (nextN == null) return;
 
   s.up = 0; s.down = 0;
+  const msg = `Stack <code>${name}</code>: replika ${current} -> ${nextN} (RAM tertinggi ${worst.toFixed(0)}%)`;
   onLine?.(`[autoscale] ${name}: replika ${current} -> ${nextN} (RAM tertinggi ${worst.toFixed(0)}%)`);
+  ev.emit(nextN > current ? 'container.autoscale_up' : 'container.autoscale_down', msg, { key: name });
   await runP('docker', ['compose', 'up', '-d', '--no-build', '--scale', `${t.service}=${nextN}`], { cwd: t.dir });
 }
 

@@ -46,6 +46,8 @@ export const CATALOG = {
   'container.over_limit':    { c: 'container', s: 'info',   t: 'Container over resource limit' },
   'container.image_ready':   { c: 'container', s: 'info',   t: 'Image pulled' },
   'container.disk_growing':  { c: 'container', s: 'info',   t: 'Docker disk usage growing' },
+  'container.autoscale_up':  { c: 'container', s: 'urgent', t: 'Replica scaled up (RAM near limit)' },
+  'container.autoscale_down':{ c: 'container', s: 'info',   t: 'Replica scaled down (idle)' },
 
   // ── Deploy ──
   'deploy.failed':           { c: 'deploy', s: 'urgent', t: 'Deploy failed' },

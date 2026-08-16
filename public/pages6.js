@@ -740,7 +740,19 @@ VIEWS.editor = () => {
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, quickOpen);
 
       showActive();
-      if (ws) { wsTitle.textContent = ws.name; loadTree(); }
+      // Datang dari tombol "Buka di Code Editor" di halaman Files? Buka
+      // workspace-nya (seluruh root itu, biar path-nya selalu ketemu tanpa
+      // perlu hitung folder induk) lalu langsung buka file yang dimaksud —
+      // gantikan workspace yang lagi aktif kalau ada, sesuai intensi klik itu.
+      let pending = null;
+      try { pending = JSON.parse(sessionStorage.getItem('files.openInEditor') || 'null'); } catch {}
+      if (pending?.root && pending?.path) {
+        sessionStorage.removeItem('files.openInEditor');
+        const rootName = { data: 'All data  (/srv/data)', stacks: 'All apps  (/srv/stacks)',
+          host: 'Semua file laptop (/)' }[pending.root] || pending.root;
+        setWorkspace({ root: pending.root, path: '', name: rootName });
+        openFile(pending.path);
+      } else if (ws) { wsTitle.textContent = ws.name; loadTree(); }
       else { wsTitle.textContent = 'No folder open'; pickWorkspace(); }
     });
   }

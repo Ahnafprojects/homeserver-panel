@@ -948,6 +948,7 @@ VIEWS.files = () => {
   const SERVER_IMG_EXT = /\.(heic|heif)$/i;
   const VIDEO_EXT = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i;
   const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
+  const PDF_EXT = /\.pdf$/i;
   const NO_PREVIEW_EXT = /\.(psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
   // Buat thumbnail grid/list (server.js /api/files/thumb) — svg/ico sengaja
   // tidak dimasukkan (vektor, sudah kecil & tajam apa adanya). Video ikut
@@ -974,6 +975,13 @@ VIEWS.files = () => {
     if (AUDIO_EXT.test(it.name)) {
       return openDrawer(it.name, el('audio', { src: rawUrl, controls: '', style: 'width:100%' }));
     }
+    if (PDF_EXT.test(it.name)) {
+      // Browser modern punya pembaca PDF bawaan — tinggal arahkan iframe ke
+      // berkas mentahnya (raw sudah dukung Range, jadi loncat halaman juga
+      // tetap enak buat PDF besar), tidak perlu convert apa pun di server.
+      return openDrawer(it.name, el('iframe', { src: rawUrl,
+        style: 'width:100%;height:75vh;border:0;border-radius:8px;background:#fff' }));
+    }
     if (NO_PREVIEW_EXT.test(it.name)) {
       return openDrawer(it.name, el('div', { class: 'empty' },
         'Browser ini tidak bisa menampilkan pratinjau untuk format ini.',
@@ -995,8 +1003,17 @@ VIEWS.files = () => {
           body: JSON.stringify({ path: full, content: ta.value, root: curRoot }) });
           toast('Saved'); } catch (e) { toast(e.message); }
       };
+      // Kotak teks polos di sini gak ada penyorotan sintaks/autocomplete —
+      // buat file kode, Code Editor (Monaco, mesin yang sama kayak VS Code)
+      // jauh lebih enak dipakai. Titipkan lokasinya lewat sessionStorage lalu
+      // pindah halaman; VIEWS.editor baca titipan itu begitu Monaco siap.
+      const openInEditor = el('button', { class: 'btn', html: ic('code', 14) + '<span>Buka di Code Editor</span>' });
+      openInEditor.onclick = () => {
+        sessionStorage.setItem('files.openInEditor', JSON.stringify({ root: curRoot, path: full }));
+        go('editor');
+      };
       openDrawer(it.name, el('div', {}, ta,
-        el('div', { class: 'row', style: 'margin-top:10px' }, save)));
+        el('div', { class: 'row', style: 'margin-top:10px' }, save, openInEditor)));
     } catch (e) { toast(e.message); }
   }
 

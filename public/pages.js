@@ -692,6 +692,7 @@ VIEWS.terminal = () => {
 /* ═══════════ Sumber daya Docker (sub-tab) ═══════════ */
 VIEWS.resources = () => {
   let data = { images: [], volumes: [], networks: [], containers: [] };
+  let imageUpdates = null; // null = belum dicek, [] = sudah dicek nihil, [...] = ada update
 
   const T = tabs([
     { id: 'images', n: 'Image', i: 'layers' },
@@ -765,31 +766,55 @@ VIEWS.resources = () => {
 
     const total = data.images.reduce((a, i) => a + i.size, 0);
     const dangling = data.images.filter(i => !i.tags.length).length;
+    const updByTag = new Map((imageUpdates || []).map(u => [u.tag, u]));
+
+    const checkBtn = el('button', { class: 'btn', html: ic('refresh', 13) + '<span>Cek update</span>' });
+    checkBtn.onclick = async () => {
+      checkBtn.disabled = true; checkBtn.textContent = 'Mengecek…';
+      try {
+        const r = await api('/images/updates');
+        imageUpdates = r.updates;
+        toast(imageUpdates.length ? `${imageUpdates.length} image ada update` : 'Semua image sudah versi terbaru');
+        renderImages(body);
+      } catch (e) { toast(e.message); }
+      finally { checkBtn.disabled = false; checkBtn.innerHTML = ic('refresh', 13) + '<span>Cek update</span>'; }
+    };
+
     const tb = el('tbody');
     data.images.forEach(i => {
       const tag = i.tags[0] || '<tanpa tag>';
       const dipakai = i.tags.some(t => used.has(t));
+      const upd = i.tags.map(t => updByTag.get(t)).find(Boolean);
+      const pullThis = upd ? el('button', { class: 'ib', title: 'Tarik versi baru', html: ic('down', 14) }) : null;
+      if (pullThis) pullThis.onclick = async () => {
+        pullThis.disabled = true;
+        try { await api('/images/pull', { method: 'POST', body: JSON.stringify({ name: tag }) });
+          toast('Ditarik — restart container-nya biar kepakai'); imageUpdates = null; load(); }
+        catch (e) { toast(e.message); } finally { pullThis.disabled = false; }
+      };
       tb.append(el('tr', {},
         el('td', {}, el('div', { class: 'row' },
           el('i', { class: 'dot ' + (dipakai ? 'up' : 'idle'),
             title: dipakai ? 'Sedang dipakai container' : 'Tidak dipakai' }),
-          el('span', { class: 'mono' }, tag))),
+          el('span', { class: 'mono' }, tag),
+          upd ? el('span', { class: 'pill warn', title: 'Ada versi baru di Docker Hub buat tag ini' }, 'update tersedia') : '')),
         el('td', { class: 'mono', style: 'color:var(--tx-3)' }, i.id),
         el('td', { class: 'num' }, bytes(i.size)),
         el('td', { style: 'color:var(--tx-3)' }, ago(i.created)),
-        el('td', {}, delBtn(async () => {
+        el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, pullThis || '', delBtn(async () => {
           if (dipakai) return toast('This image is in use by a container');
           if (!confirm(`Hapus image ${tag}?`)) return;
           try { await api('/images/' + encodeURIComponent(i.tags[0] || i.id), { method: 'DELETE' });
             toast('Image dihapus'); load(); } catch (e) { toast(e.message); }
-        }))));
+        })))));
     });
     body.replaceChildren(
-      el('div', { class: 'row', style: 'margin-bottom:12px' },
+      el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
         el('span', { class: 'pill' }, `${data.images.length} image`),
         el('span', { class: 'pill' }, bytes(total)),
         dangling ? el('span', { class: 'pill warn' }, `${dangling} tanpa tag`) : '',
-        el('span', { class: 'sp' }), pull),
+        imageUpdates?.length ? el('span', { class: 'pill warn' }, `${imageUpdates.length} update tersedia`) : '',
+        el('span', { class: 'sp' }), checkBtn, pull),
       el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
         el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Image'),
           el('th', {}, 'ID'), el('th', { class: 'num' }, 'Size'),

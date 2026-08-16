@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage, netStats } from './docker.js';
 import { makeSeriesStore } from './historyStore.js';
+import * as registryCheck from './registryCheck.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -1978,6 +1979,14 @@ const requestHandler = async (req, res) => {
         const imgs = await docker.listImages();
         return ok(res, { images: imgs.map(i => ({ id: i.Id.replace('sha256:', '').slice(0, 12),
           tags: i.RepoTags || [], size: i.Size, created: i.Created * 1000 })) });
+      }
+      // Cek update tersedia (Docker Hub doang) buat semua image lokal yang
+      // punya nama/tag -- BUKAN auto-update, cuma kasih tau, tarik manual
+      // lewat tombol Pull yang sudah ada kalau mau.
+      if (p === '/api/images/updates' && req.method === 'GET') {
+        const imgs = await docker.listImages();
+        const updates = await registryCheck.checkImages(imgs);
+        return ok(res, { updates, checked: imgs.filter((i) => i.RepoTags?.length).length });
       }
       if (p === '/api/images/pull' && req.method === 'POST') {
         const b = await readJson(req);

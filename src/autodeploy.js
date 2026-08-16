@@ -10,7 +10,7 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import net from 'node:net';
+import { runP } from './stacks.js';
 
 /* Deteksi jenis project dari isi foldernya. */
 export async function detect(dir) {
@@ -118,17 +118,36 @@ function composeFor(name, det, { port, envVars = {} }) {
     + `    ports:\n      - "${port}:${svcPort}"\n${envBlock}    restart: unless-stopped\n`;
 }
 
-/* Cari port host yang bebas, mulai dari 'from'. */
-export function findFreePort(from = 4000) {
-  return new Promise((resolve) => {
-    const tryPort = (p) => {
-      const s = net.createServer();
-      s.once('error', () => { s.close(); tryPort(p + 1); });
-      s.once('listening', () => s.close(() => resolve(p)));
-      s.listen(p, '127.0.0.1');
-    };
-    tryPort(from);
-  });
+/* Cari port host yang bebas, mulai dari 'from'.
+   Dulu ini coba net.createServer().listen() DI DALAM container panel
+   sendiri — kelihatan masuk akal, tapi salah total: container ini punya
+   network namespace sendiri (beda dari host, sekalipun pid:host berbagi
+   PID namespace), jadi port 4000 bisa "kosong" menurut panel padahal di
+   laptop aslinya sudah dipakai stack lain lewat docker-proxy. Makanya
+   auto-deploy bisa nyaranin port yang ternyata sudah kepakai, gagal pas
+   "docker compose up" beneran jalan ("port is already allocated") —
+   bukan pas dites di sini. Sekarang benar-benar ngecek port yang lagi
+   LISTEN di host lewat nsenter (masuk namespace jaringan host beneran). */
+export async function findFreePort(from = 4000) {
+  const used = new Set();
+  try {
+    // -m -u -i sekalian (bukan cuma -n): "ss" tidak ada di dalam container
+    // panel sendiri (cuma util-linux, bukan iproute2) — masuk juga ke mount
+    // namespace host biar binary ss dari LAPTOP yang kepakai.
+    const { out } = await runP('nsenter', ['-t', '1', '-m', '-u', '-n', '-i', '--', 'ss', '-tln']);
+    // Kolom ke-4 (0-based index 3) dari "ss -tln" itu alamat:port lokal,
+    // mis. "0.0.0.0:4000", "[::]:4000", atau "*:4000".
+    for (const line of out.split('\n')) {
+      const cols = line.trim().split(/\s+/);
+      const local = cols[3];
+      const m = local && local.match(/:(\d+)$/);
+      if (m) used.add(+m[1]);
+    }
+  } catch { /* nsenter/ss tidak ada — jatuh ke "anggap semua kosong" di bawah */ }
+  for (let p = from; p < from + 2000; p++) {
+    if (!used.has(p)) return p;
+  }
+  return from;
 }
 
 /* Tulis Dockerfile + docker-compose.yml + nginx.conf (kalau perlu) ke folder

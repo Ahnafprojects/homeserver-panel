@@ -245,7 +245,25 @@ VIEWS.stacks = () => {
   }
 
   function showAutoConfirm(name, det) {
-    const port = el('input', { value: det.suggestedPort, inputmode: 'numeric' });
+    // Port dicari otomatis (dan sekarang beneran dicek ke laptopnya, bukan
+    // cuma di dalam container panel — lihat findFreePort di autodeploy.js),
+    // dan kalaupun ternyata masih bentrok pas deploy jalan (jarang, tapi
+    // ada celah balapan kecil), server otomatis coba port lain sendiri
+    // tanpa perlu bolak-balik ke sini. Jadi field-nya disembunyikan secara
+    // default — kebanyakan orang tidak perlu mikirin nomor port sama
+    // sekali — tapi tetap bisa diubah manual lewat "Ubah port" kalau
+    // memang mau nge-pin ke port tertentu (mis. buat reverse proxy lain).
+    const port = el('input', { value: det.suggestedPort, inputmode: 'numeric', style: 'display:none' });
+    const portField = el('div', { class: 'field', style: 'display:none' },
+      el('label', {}, 'Port di laptop (host)'), port);
+    const portNote = el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
+      `Port dicari otomatis (sekarang: ${det.suggestedPort}) — kalau ternyata bentrok pas deploy, `
+        + 'server coba port lain sendiri. ',
+      (() => {
+        const a = el('a', { style: 'cursor:pointer;color:var(--acc)' }, 'Ubah port manual');
+        a.onclick = () => { portNote.style.display = 'none'; portField.style.display = ''; port.style.display = ''; };
+        return a;
+      })());
     const envBox = el('textarea', { rows: 4, spellcheck: 'false',
       placeholder: 'DATABASE_URL=postgres://user:pass@host:5432/db\nNEXT_PUBLIC_API_URL=https://...' });
     const isBuildTime = det.type === 'next-static' || det.type === 'static-build';
@@ -264,7 +282,7 @@ VIEWS.stacks = () => {
     };
     openDrawer('Terdeteksi: ' + det.label, el('div', {},
       el('div', { class: 'pill ok', style: 'margin-bottom:14px' }, det.label),
-      el('div', { class: 'field' }, el('label', {}, 'Port di laptop (host)'), port),
+      portNote, portField,
       el('div', { class: 'field' }, el('label', {}, 'Environment variable (opsional — satu per baris, KEY=nilai)'), envBox),
       el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px' },
         isBuildTime

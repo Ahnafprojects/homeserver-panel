@@ -1609,17 +1609,35 @@ const server = http.createServer(async (req, res) => {
             return done(c);
           }
           if (action === 'autodeploy') {
-            const port = +q.get('port');
+            let port = +q.get('port');
             if (!Number.isInteger(port) || port < 1 || port > 65535) {
               send('ERROR: Port tidak valid'); return done(1);
             }
             let envVars = {};
             try { envVars = JSON.parse(q.get('env') || '{}'); } catch {}
             send('$ mendeteksi jenis project…');
-            const det = await autodeploy.scaffold(stacks.dirOf(name), name, { port, envVars });
+            let det = await autodeploy.scaffold(stacks.dirOf(name), name, { port, envVars });
             send(`$ terdeteksi: ${det.label} — Dockerfile & docker-compose.yml dibuat otomatis`);
-            send('$ docker compose up -d --build');
-            const c = await stacks.deploy(name, send);
+            // Port yang disarankan sudah dicek ke host (bukan cuma di dalam
+            // container panel), tapi tetap ada celah balapan kecil antara
+            // saran itu ditampilkan dan tombol "Deploy" beneran diklik —
+            // stack lain bisa saja baru saja pakai port itu di antaranya.
+            // Kalau itu kejadian, jangan langsung nyerah: cari port lain
+            // otomatis, tulis ulang compose-nya, coba lagi — user tidak
+            // perlu tahu-menahu soal nomor port sama sekali.
+            let c;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+              let portConflict = false;
+              send('$ docker compose up -d --build');
+              c = await stacks.deploy(name, (line) => {
+                if (/port is already allocated|address already in use|bind.*failed/i.test(line)) portConflict = true;
+                send(line);
+              });
+              if (c === 0 || !portConflict) break;
+              port = await autodeploy.findFreePort(port + 1);
+              send(`$ port sebelumnya sudah dipakai stack lain — coba lagi pakai port ${port}…`);
+              det = await autodeploy.scaffold(stacks.dirOf(name), name, { port, envVars });
+            }
             auth.audit(ses.username, 'autodeploy', `${name} (${det.type}) code=${c}`);
             ev.emit(c === 0 ? 'deploy.success' : 'deploy.failed',
               `Stack <code>${name}</code> (deploy otomatis, ${det.label})${c === 0 ? ' berhasil.' : ` gagal (kode ${c}).`}`, { key: name });

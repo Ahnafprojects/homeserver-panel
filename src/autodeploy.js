@@ -110,12 +110,21 @@ function composeFor(name, det, { port, envVars = {} }) {
   const envBlock = keys.length && isRuntime
     ? `    environment:\n${keys.map(k => `      - ${k}=${envVars[k]}`).join('\n')}\n`
     : '';
+  // Batas RAM container — tanpa ini satu proses Node yang kebocor
+  // memori (atau situs yang lagi rame diakses) bisa gerus semua RAM
+  // laptop ini (cuma 7,6 GB, dipakai bareng panel & stack lain). Kalau
+  // kepentok batasnya, container itu SENDIRI yang di-OOM-kill oleh
+  // kernel (lalu otomatis nyala lagi karena restart: unless-stopped),
+  // bukan laptopnya yang macet total kehabisan RAM.
+  const memLimit = isRuntime ? '768m' : '256m';
+
   // "${name}" dikutip — nama stack yang bisa dipilih user (nama folder,
   // dsb) kadang berupa angka murni (mis. "333"). Tanpa tanda kutip, YAML
   // membaca "333:" sebagai KEY ANGKA, bukan teks, dan docker compose
   // menolaknya: "non-string key in services: 333".
   return `services:\n  "${name}":\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
-    + `    ports:\n      - "${port}:${svcPort}"\n${envBlock}    restart: unless-stopped\n`;
+    + `    ports:\n      - "${port}:${svcPort}"\n${envBlock}`
+    + `    mem_limit: ${memLimit}\n    restart: unless-stopped\n`;
 }
 
 /* Cari port host yang bebas, mulai dari 'from'.

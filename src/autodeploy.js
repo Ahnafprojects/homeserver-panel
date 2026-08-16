@@ -110,7 +110,11 @@ function composeFor(name, det, { port, envVars = {} }) {
   const envBlock = keys.length && isRuntime
     ? `    environment:\n${keys.map(k => `      - ${k}=${envVars[k]}`).join('\n')}\n`
     : '';
-  return `services:\n  ${name}:\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
+  // "${name}" dikutip — nama stack yang bisa dipilih user (nama folder,
+  // dsb) kadang berupa angka murni (mis. "333"). Tanpa tanda kutip, YAML
+  // membaca "333:" sebagai KEY ANGKA, bukan teks, dan docker compose
+  // menolaknya: "non-string key in services: 333".
+  return `services:\n  "${name}":\n    build:\n      context: .\n      dockerfile: Dockerfile\n${buildBlock}`
     + `    ports:\n      - "${port}:${svcPort}"\n${envBlock}    restart: unless-stopped\n`;
 }
 

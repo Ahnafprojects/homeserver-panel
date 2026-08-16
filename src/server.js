@@ -2195,10 +2195,17 @@ server.on('upgrade', async (req, socket, head) => {
   if (!ses) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
   // Ini satu-satunya jalur WebSocket di panel, jadi TIDAK lewat pemeriksaan
   // AREA yang menjaga endpoint /api/* biasa — sebelumnya cuma dicek "sudah
-  // login", tanpa cek izin halaman "Terminal" sama sekali. Shell akar laptop
-  // bukan sesuatu yang boleh didapat siapa pun yang login (apalagi viewer,
-  // yang seharusnya baca-saja) — dicek eksplisit di sini.
-  if (!auth.canPage(ses, 'terminal') || !auth.canWrite(ses)) {
+  // login", tanpa cek izin halaman sama sekali. Shell akar laptop bukan
+  // sesuatu yang boleh didapat siapa pun yang login (apalagi viewer, yang
+  // seharusnya baca-saja) — dicek eksplisit di sini.
+  // Tiga halaman ini masing-masing punya terminal tertanam sendiri
+  // (Terminal, Code Editor, dan log Deploy di Stacks buat betulin
+  // docker-compose.yml yang gagal) — editor & stacks memang sudah
+  // menyiratkan kendali level host lewat baca/tulis berkas & deploy
+  // compose apa pun, jadi wajar juga dapat shell dari situ.
+  const canTerm = auth.canPage(ses, 'terminal') || auth.canPage(ses, 'editor')
+    || auth.canPage(ses, 'stacks');
+  if (!canTerm || !auth.canWrite(ses)) {
     socket.write('HTTP/1.1 403 Forbidden\r\n\r\n'); socket.destroy(); return;
   }
 

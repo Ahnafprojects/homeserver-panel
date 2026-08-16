@@ -14,9 +14,64 @@ VIEWS.stacks = () => {
   addAction('New stack', 'plus', () => formCompose());
   addAction('Refresh', 'refresh', () => load());
 
-  function logDrawer(title) {
-    const box = el('div', { class: 'logbox', style: 'height:70vh' });
-    openDrawer(title, box);
+  // Sama persis kayak aturan safeName() di stacks.js (server) — biar folder
+  // yang dibuka terminal cocok sama folder stack yang beneran dipakai
+  // server, sekalipun nama yang diketik user ada huruf besar/karakter aneh.
+  const safeStackName = (n) => String(n || '').toLowerCase().replace(/[^a-z0-9_.-]/g, '');
+
+  // Terminal langsung di jendela log deploy — kalau gagal (mis. bug di
+  // docker-compose.yml hasil generate otomatis), tidak perlu pindah ke
+  // menu Terminal terus cari-cari direktorinya sendiri; direktori kerjanya
+  // sudah otomatis di folder stack ini.
+  function embedTerminal(container, stackName) {
+    if (!window.Terminal || !window.FitAddon) {
+      container.replaceChildren(el('div', { style: 'padding:10px;font-size:11.5px;color:#8b91a0' },
+        'Komponen terminal belum siap, tunggu sebentar lalu buka lagi.'));
+      return;
+    }
+    container.style.position = 'relative';
+    const box = el('div', { style: 'position:absolute;inset:0;padding:6px' });
+    container.append(box);
+    const term = new Terminal({ fontSize: 12, fontFamily: 'ui-monospace,Menlo,monospace',
+      cursorBlink: true, scrollback: 3000,
+      theme: { background: '#0b0c0f', foreground: '#d6dae1', cursor: '#5b8def' } });
+    const fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(box);
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const cwd = `/srv/stacks/${safeStackName(stackName)}`;
+    const sock = new WebSocket(`${proto}://${location.host}/ws/term?cwd=${encodeURIComponent(cwd)}`);
+    sock.binaryType = 'arraybuffer';
+    sock.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+    sock.onclose = () => term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
+    term.onData(d => sock.readyState === 1 && sock.send(d));
+    term.onResize(({ rows, cols }) => sock.readyState === 1 && sock.send(`\x00resize:${rows},${cols}`));
+    const ro = new ResizeObserver(() => { try { fitAddon.fit(); } catch {} });
+    ro.observe(box);
+    timers.push({ close: () => { ro.disconnect(); sock?.close(); term?.dispose(); } });
+    setTimeout(() => { try { fitAddon.fit(); term.focus(); } catch {} }, 30);
+  }
+
+  function logDrawer(title, stackName) {
+    const box = el('div', { class: 'logbox', style: `height:${stackName ? '48vh' : '70vh'}` });
+    const children = [box];
+    if (stackName) {
+      const termWrap = el('div', { style: 'display:none;height:26vh;margin-top:8px;'
+        + 'border-radius:8px;overflow:hidden;background:#0b0c0f' });
+      let started = false;
+      const btnTerm = el('button', { class: 'btn', style: 'margin-top:8px',
+        html: ic('term', 13) + '<span>Buka Terminal di folder stack ini</span>' });
+      btnTerm.onclick = () => {
+        const open2 = termWrap.style.display === 'none';
+        termWrap.style.display = open2 ? 'block' : 'none';
+        btnTerm.querySelector('span').textContent = open2
+          ? 'Tutup Terminal' : 'Buka Terminal di folder stack ini';
+        if (open2 && !started) { started = true; embedTerminal(termWrap, stackName); }
+        else if (open2) { setTimeout(() => window.dispatchEvent(new Event('resize')), 30); }
+      };
+      children.push(btnTerm, termWrap);
+    }
+    openDrawer(title, el('div', {}, ...children));
     return {
       line: (t) => { box.append(el('span', { class: 'l' }, t)); box.scrollTop = box.scrollHeight; },
       done: (c) => box.append(el('span', { class: 'l',
@@ -25,8 +80,8 @@ VIEWS.stacks = () => {
     };
   }
 
-  function stream(url, title, after) {
-    const d = logDrawer(title);
+  function stream(url, title, after, stackName) {
+    const d = logDrawer(title, stackName);
     const es = new EventSource(url);
     es.onmessage = e => { try { d.line(JSON.parse(e.data)); } catch { d.line(e.data); } };
     es.addEventListener('done', e => { d.done(+e.data); es.close(); after?.(+e.data); load(); });
@@ -60,7 +115,7 @@ VIEWS.stacks = () => {
       try {
         const r = await save(); if (!r) return;
         if (!r.ok) { toast('Perbaiki YAML dulu'); return; }
-        stream(`/api/stacks/${encodeURIComponent(r.n)}/deploy`, 'Deploy — ' + r.n);
+        stream(`/api/stacks/${encodeURIComponent(r.n)}/deploy`, 'Deploy — ' + r.n, null, r.n);
       } catch (e) { toast(e.message); }
     };
 
@@ -98,7 +153,7 @@ VIEWS.stacks = () => {
         r = r.replace(/^https:\/\//i, `https://${encodeURIComponent(token.value.trim())}@`);
       }
       stream(`/api/stacks/${encodeURIComponent(n)}/clone?repo=${encodeURIComponent(r)}`
-        + `&branch=${encodeURIComponent(branch.value || '')}`, 'Clone — ' + n);
+        + `&branch=${encodeURIComponent(branch.value || '')}`, 'Clone — ' + n, null, n);
     };
     openDrawer('Clone from Git', el('div', {},
       el('div', { class: 'field' }, el('label', {}, 'Nama stack'), name),
@@ -177,7 +232,7 @@ VIEWS.stacks = () => {
       });
       closeDrawer();
       stream(`/api/stacks/${encodeURIComponent(name)}/autodeploy?port=${p}`
-        + `&env=${encodeURIComponent(JSON.stringify(envVars))}`, 'Deploy otomatis — ' + name);
+        + `&env=${encodeURIComponent(JSON.stringify(envVars))}`, 'Deploy otomatis — ' + name, null, name);
     };
     openDrawer('Terdeteksi: ' + det.label, el('div', {},
       el('div', { class: 'pill ok', style: 'margin-bottom:14px' }, det.label),
@@ -201,8 +256,8 @@ VIEWS.stacks = () => {
         b.onclick = fn; return b;
       };
       acts.append(
-        mk('Deploy', 'play', () => stream(`/api/stacks/${s.name}/deploy`, 'Deploy — ' + s.name), 'btn pri'),
-        mk('Stop', 'stop', () => stream(`/api/stacks/${s.name}/stop`, 'Stop — ' + s.name)),
+        mk('Deploy', 'play', () => stream(`/api/stacks/${s.name}/deploy`, 'Deploy — ' + s.name, null, s.name), 'btn pri'),
+        mk('Stop', 'stop', () => stream(`/api/stacks/${s.name}/stop`, 'Stop — ' + s.name, null, s.name)),
         mk('Edit', 'edit', () => formCompose(st)),
         mk('Delete', 'trash', async () => {
           if (!confirm(`Hapus stack "${s.name}" beserta volume-nya?`)) return;
@@ -297,14 +352,14 @@ VIEWS.stacks = () => {
           sel.value = g.current;
           const sw = el('button', { class: 'btn' }, 'Pindah');
           sw.onclick = () => stream(`/api/stacks/${s.name}/checkout?ref=${encodeURIComponent(sel.value)}`,
-            'Checkout — ' + sel.value);
+            'Checkout — ' + sel.value, null, s.name);
           const pull = el('button', { class: 'btn', html: ic('down', 13) + '<span>Tarik update</span>' });
-          pull.onclick = () => stream(`/api/stacks/${s.name}/pull`, 'Pull — ' + s.name);
+          pull.onclick = () => stream(`/api/stacks/${s.name}/pull`, 'Pull — ' + s.name, null, s.name);
           const tb = el('tbody');
           g.log.forEach(c => {
             const rb = el('button', { class: 'ib', title: 'Kembali ke commit ini', html: ic('restart', 13) });
             rb.onclick = () => confirm(`Kembali ke commit ${c.hash}?`) &&
-              stream(`/api/stacks/${s.name}/checkout?ref=${c.hash}`, 'Rollback — ' + c.hash);
+              stream(`/api/stacks/${s.name}/checkout?ref=${c.hash}`, 'Rollback — ' + c.hash, null, s.name);
             tb.append(el('tr', {}, el('td', { class: 'mono' }, c.hash),
               el('td', {}, c.subject), el('td', { style: 'color:var(--tx-3)' }, c.when),
               el('td', {}, rb)));

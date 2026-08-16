@@ -1,7 +1,7 @@
 // Service worker seperlunya: hanya menyimpan kerangka aplikasi supaya
 // panel tetap terbuka saat jaringan putus. Data API TIDAK pernah di-cache,
 // karena menampilkan status server yang basi lebih berbahaya daripada error.
-const CACHE = 'panel-v1';
+const CACHE = 'panel-v2';
 const SHELL = ['/', '/app.css', '/app.js', '/pages.js', '/pages2.js',
   '/pages3.js', '/pages4.js', '/pages5.js', '/pages6.js',
   '/icon.svg', '/manifest.json'];

@@ -1504,8 +1504,51 @@ $('#themeBtn').onclick = () => {
 applyTheme(localStorage.getItem('theme') || 'auto');
 
 // PWA: panel bisa dipasang di layar utama HP dan tetap terbuka saat sinyal hilang.
+// Sebelumnya update JS/CSS panel sering "tidak kelihatan" walau server sudah
+// dideploy ulang — Service Worker punya cache sendiri (Cache Storage) yang
+// TIDAK dipengaruhi header Cache-Control biasa. clientsClaim di sw.js sudah
+// bikin worker baru langsung ambil alih, tapi TAB yang sudah kebuka duluan
+// baru kepakai worker baru itu begitu ada fetch berikutnya — auto-reload di
+// bawah ini yang benar-benar menutup celahnya (sekali saja, bukan reload
+// berulang) begitu worker baru itu resmi aktif jadi controller tab ini.
 if ('serviceWorker' in navigator) {
-  addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  let reloadedForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloadedForUpdate) return;
+    reloadedForUpdate = true;
+    location.reload();
+  });
+  addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').then((reg) => {
+      // Cek versi baru tiap kali tab ini kelihatan lagi (pindah tab balik,
+      // buka dari background) — bukan cuma sekali pas load pertama.
+      addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') reg.update().catch(() => {});
+      });
+    }).catch(() => {});
+  });
+}
+
+// Tombol manual buat kasus service worker/cache-nya kepentok aneh dan
+// auto-reload di atas tidak cukup — bersihkan semuanya sampai bersih
+// (unregister worker + hapus semua Cache Storage), lalu muat ulang penuh.
+const clearCacheBtn = $('#clearCacheBtn');
+if (clearCacheBtn) {
+  clearCacheBtn.innerHTML = ic('refresh', 15);
+  clearCacheBtn.onclick = async () => {
+    clearCacheBtn.disabled = true;
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister()));
+      }
+      if (window.caches) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch {}
+    location.reload();
+  };
 }
 
 $('#burger').onclick = () => $('#side').classList.toggle('open');

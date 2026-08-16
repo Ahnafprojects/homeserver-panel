@@ -191,15 +191,21 @@ setInterval(() => autoscale.tick((l) => console.log(l)).catch(() => {}), 20000);
 // dari autoscale di atas karena ini cuma buat grafik, bukan aksi otomatis
 // yang butuh reaksi cepat.
 setInterval(async () => {
+  let fleetMem = 0, fleetCpu = 0, fleetReq = 0, gotReq = false;
   for (const inst of dbaas.listInstances()) {
     try {
       const [s, req] = await Promise.all([
         docker.statsOnce(inst.container),
         dbaas.requestCounterOf(inst.id).catch(() => null),
       ]);
-      dbaas.recordSample(inst.id, { mem: memUsage(s).used, cpu: cpuPercent(s),
-        req: req?.total ?? null, reqErr: req?.errors ?? null });
+      const mem = memUsage(s).used, cpu = cpuPercent(s);
+      dbaas.recordSample(inst.id, { mem, cpu, req: req?.total ?? null, reqErr: req?.errors ?? null });
+      fleetMem += mem; fleetCpu += cpu;
+      if (req?.total != null) { fleetReq += req.total; gotReq = true; }
     } catch {}
+  }
+  if (dbaas.listInstances().length) {
+    dbaas.recordFleetSample({ mem: fleetMem, cpu: fleetCpu, req: gotReq ? fleetReq : null });
   }
 }, 60000);
 setInterval(() => {
@@ -828,6 +834,9 @@ const requestHandler = async (req, res) => {
         Object.entries(dbaas.ENGINES).map(([k, v]) => ({ id: k, label: v.label,
           versions: v.versions, port: v.port, note: v.note, kind: v.kind })) });
 
+      if (p === '/api/db/fleet-history' && req.method === 'GET') {
+        return ok(res, { history: dbaas.getFleetHistory() });
+      }
       // Overview GABUNGAN — semua instance sekaligus (beda dari
       // /api/db/instances/:id/overview yang cuma satu). Dipakai kartu
       // ringkasan di puncak halaman Databases.

@@ -16,13 +16,24 @@ VIEWS.database = () => {
 
   async function paintFleet() {
     try {
-      const f = await api('/db/overview');
+      const [f, fh] = await Promise.all([api('/db/overview'), api('/db/fleet-history')]);
       if (!f.total) { fleetArea.replaceChildren(); return; }
       const memPct = f.totalMemLimit ? Math.round((f.totalMem / f.totalMemLimit) * 100) : null;
       const stat = (key, icon, val, meta) => el('div', { class: 'stat' },
         el('div', { class: 'k', html: ic(icon, 12) + `<span>${key}</span>` }),
         el('div', { class: 'v', html: val }), meta ? el('div', { class: 'm' }, meta) : '');
       const engineList = Object.entries(f.perEngine).map(([k, n]) => `${n} ${k}`).join(', ');
+
+      const pts = fh.history || [];
+      const reqPts = pts.filter(p => p.req != null);
+      const reqDeltas = reqPts.slice(1).map((p, idx) => Math.max(0, p.req - reqPts[idx].req));
+      const fc1 = el('canvas'), fc2 = el('canvas');
+      const fcard = (t, c) => el('div', { class: 'card' },
+        el('div', { class: 'card-h' }, el('h3', {}, t)), el('div', { class: 'card-b' }, c));
+      const fCharts = el('div', { class: 'grid2', style: 'margin-top:12px' },
+        fcard('Total RAM semua instance (3 jam)', fc1),
+        fcard('Total Requests per menit (3 jam)', fc2));
+
       fleetArea.replaceChildren(
         el('div', { class: 'sec' }, 'Overview semua basis data'),
         el('div', { class: 'stats' },
@@ -31,7 +42,13 @@ VIEWS.database = () => {
           stat('Total RAM', 'ram', memPct != null ? `${memPct}<small>%</small>` : (f.totalMem ? bytes(f.totalMem) : '—'),
             f.totalMemLimit ? `${bytes(f.totalMem)} / ${bytes(f.totalMemLimit)}` : ''),
           stat('Koneksi aktif', 'net', f.totalConn != null ? f.totalConn : '—', 'gabungan semua instance'),
-          stat('Total Requests', 'pulse', f.totalReq, '3 jam terakhir, gabungan')));
+          stat('Total Requests', 'pulse', f.totalReq, '3 jam terakhir, gabungan')),
+        pts.length >= 2 ? fCharts : el('div',
+          { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px' },
+          'Grafik gabungan baru muncul setelah beberapa menit (disampel tiap 60 detik).'));
+
+      if (pts.length >= 2) chart(fc1, [{ data: pts.map(p => p.mem), color: '#5b8def' }], { fmt: v => bytes(v) });
+      if (reqDeltas.length >= 2) chart(fc2, [{ data: reqDeltas, color: '#3dbb7d' }]);
     } catch { fleetArea.replaceChildren(); }
   }
   every(paintFleet, 20000);

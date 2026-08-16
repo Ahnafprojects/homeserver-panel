@@ -363,6 +363,27 @@ export function recordSample(id, sample) {
 }
 export function getHistory(id) { return dbHistory[id] || []; }
 
+/* Riwayat GABUNGAN (semua instance dijumlah per-tick) — dipakai grafik di
+   overview gabungan (puncak halaman Databases), beda dari getHistory()
+   yang per-instance. Direkam sekali per siklus sampling di server.js
+   (bukan dihitung ulang dari dbHistory di atas) supaya sudah pasti dari
+   tick yang SAMA, bukan nyampur timestamp yang beda-beda antar instance. */
+let fleetHistory = [];
+const FLEET_FILE = path.join(STATE, 'db-fleet-history.json');
+try { fleetHistory = JSON.parse(fs.readFileSync(FLEET_FILE, 'utf8')); } catch {}
+let fleetDirty = false;
+setInterval(() => {
+  if (!fleetDirty) return;
+  fleetDirty = false;
+  try { fs.mkdirSync(STATE, { recursive: true }); fs.writeFileSync(FLEET_FILE, JSON.stringify(fleetHistory)); } catch {}
+}, 30000);
+export function recordFleetSample(sample) {
+  fleetHistory.push({ t: Date.now(), ...sample });
+  if (fleetHistory.length > HIST_MAX) fleetHistory.splice(0, fleetHistory.length - HIST_MAX);
+  fleetDirty = true;
+}
+export function getFleetHistory() { return fleetHistory; }
+
 
 /* ══ Riwayat kueri ══════════════════════════════════════════════════════════
    Setiap kueri yang dijalankan lewat panel dicatat: teksnya, lama jalan,

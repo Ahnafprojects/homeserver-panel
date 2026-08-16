@@ -858,6 +858,40 @@ const requestHandler = async (req, res) => {
       if (p === '/api/system/stats') {
         return ok(res, lastStats || (await sys.snapshot()));
       }
+      // Dashboard kuota resource keseluruhan — "kalau semua container
+      // kepentok batasnya BARENGAN, cukup gak RAM/CPU laptop ini?" Beda
+      // dari statistik pemakaian SEKARANG (yang sudah ada di Overview) --
+      // ini soal ALOKASI (mem_limit/cpus tiap container dijumlah), yang
+      // ga kelihatan dari statistik real-time biasa.
+      if (p === '/api/resource-quota') {
+        const [mem, cpuInfo, disk, containers] = await Promise.all([
+          sys.memory(), sys.cpu(), sys.disk(), docker.listContainers(),
+        ]);
+        const running = containers.filter((c) => c.State === 'running');
+        let allocMem = 0, allocCpu = 0, unlimitedMem = 0, unlimitedCpu = 0, usedMemNow = 0, usedCpuNow = 0;
+        const perContainer = [];
+        await Promise.all(running.map(async (c) => {
+          const name = (c.Names?.[0] || '').replace(/^\//, '');
+          try {
+            const [insp, s] = await Promise.all([docker.inspect(c.Id), docker.statsOnce(c.Id)]);
+            const memLimit = insp.HostConfig?.Memory || 0;
+            const nanoCpus = insp.HostConfig?.NanoCpus || 0;
+            if (memLimit > 0) allocMem += memLimit; else unlimitedMem++;
+            if (nanoCpus > 0) allocCpu += nanoCpus / 1e9; else unlimitedCpu++;
+            const used = memUsage(s).used, cpuPct = cpuPercent(s);
+            usedMemNow += used; usedCpuNow += cpuPct;
+            perContainer.push({ name, memLimit: memLimit || null, cpuLimit: nanoCpus ? nanoCpus / 1e9 : null,
+              memUsed: used, cpuUsed: cpuPct });
+          } catch {}
+        }));
+        return ok(res, {
+          host: { memTotal: mem.total, cpuCores: cpuInfo.cores, diskTotal: disk.total, diskFree: disk.free },
+          allocated: { mem: allocMem, cpu: allocCpu, unlimitedMemCount: unlimitedMem, unlimitedCpuCount: unlimitedCpu },
+          usedNow: { mem: usedMemNow, cpu: usedCpuNow },
+          containers: perContainer.sort((a, b) => (b.memLimit || 0) - (a.memLimit || 0)),
+        });
+      }
+
       // Global search (Cmd/Ctrl+K) — cari lintas stacks/containers/database/
       // halaman sekaligus. Tiap kategori difilter permission-nya sendiri
       // (canPage/canDb), bukan digerbang di level AREA di atas -- Viewer

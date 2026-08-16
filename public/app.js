@@ -465,13 +465,44 @@ VIEWS.overview = () => {
     catch (e) { procWrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
   }
 
+  // Kuota: "kalau SEMUA container kepentok batasnya barengan, laptop ini
+  // masih cukup gak?" -- beda dari statistik pemakaian SEKARANG (stats di
+  // atas), ini soal ALOKASI (mem_limit/cpus tiap container dijumlah).
+  const quotaArea = el('div');
+  async function paintQuota() {
+    try {
+      const r = await api('/resource-quota');
+      const memPct = Math.round((r.allocated.mem / r.host.memTotal) * 100);
+      const cpuPct = Math.round((r.allocated.cpu / r.host.cpuCores) * 100);
+      const bar = (pct) => el('div', { class: 'bar' }, el('i', { style: `width:${Math.min(pct, 100)}%`,
+        class: pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '' }));
+      const row = (label, pct, detail) => el('div', { style: 'padding:9px 0;border-top:1px solid var(--line)' },
+        el('div', { class: 'row', style: 'margin-bottom:5px' },
+          el('span', { style: 'font-size:12.5px' }, label), el('span', { class: 'sp' }),
+          el('span', { style: 'font-size:12.5px;font-weight:600' }, pct + '%')),
+        bar(pct), el('div', { style: 'font-size:11px;color:var(--tx-3);margin-top:4px' }, detail));
+      quotaArea.replaceChildren(
+        el('div', { class: 'card' }, el('div', { class: 'card-b' },
+          row('RAM teralokasi (kalau semua kepentok limit bareng)', memPct,
+            `${bytes(r.allocated.mem)} / ${bytes(r.host.memTotal)}`
+            + (r.allocated.unlimitedMemCount ? ` — ${r.allocated.unlimitedMemCount} container tanpa limit RAM` : '')),
+          row('CPU teralokasi', cpuPct,
+            `${r.allocated.cpu.toFixed(1)} / ${r.host.cpuCores} core`
+            + (r.allocated.unlimitedCpuCount ? ` — ${r.allocated.unlimitedCpuCount} container tanpa limit CPU` : '')),
+          el('div', { style: 'font-size:11px;color:var(--tx-3);margin-top:10px' },
+            `Kepake beneran sekarang: ${bytes(r.usedNow.mem)} RAM, ${r.usedNow.cpu.toFixed(1)}% CPU`))));
+    } catch (e) { quotaArea.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+
   const root = el('div', {},
     el('div', { class: 'sec' }, 'Resources'), stats,
+    el('div', { class: 'sec' }, 'Kapasitas & alokasi'), quotaArea,
     secTitle, chartsWrap,
     el('div', { class: 'sec' }, 'System'), infoCard,
     procSecTitle, procWrap);
   mount(root);
   every(loadProc, 4000);
+  every(paintQuota, 20000);
 
   const mk = (key, icon, val, meta, pct) => {
     const bar = pct != null ? el('div', { class: 'bar' },

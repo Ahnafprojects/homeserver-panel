@@ -191,21 +191,25 @@ setInterval(() => autoscale.tick((l) => console.log(l)).catch(() => {}), 20000);
 // dari autoscale di atas karena ini cuma buat grafik, bukan aksi otomatis
 // yang butuh reaksi cepat.
 setInterval(async () => {
-  let fleetMem = 0, fleetCpu = 0, fleetReq = 0, gotReq = false;
+  let fleetMem = 0, fleetCpu = 0, fleetReq = 0, fleetConn = 0, gotReq = false, gotConn = false;
   for (const inst of dbaas.listInstances()) {
     try {
-      const [s, req] = await Promise.all([
+      const [s, req, conn] = await Promise.all([
         docker.statsOnce(inst.container),
         dbaas.requestCounterOf(inst.id).catch(() => null),
+        dbaas.connectionCount(inst.id).catch(() => null),
       ]);
       const mem = memUsage(s).used, cpu = cpuPercent(s);
-      dbaas.recordSample(inst.id, { mem, cpu, req: req?.total ?? null, reqErr: req?.errors ?? null });
+      dbaas.recordSample(inst.id, { mem, cpu, conn,
+        req: req?.total ?? null, reqErr: req?.errors ?? null });
       fleetMem += mem; fleetCpu += cpu;
       if (req?.total != null) { fleetReq += req.total; gotReq = true; }
+      if (conn != null) { fleetConn += conn; gotConn = true; }
     } catch {}
   }
   if (dbaas.listInstances().length) {
-    dbaas.recordFleetSample({ mem: fleetMem, cpu: fleetCpu, req: gotReq ? fleetReq : null });
+    dbaas.recordFleetSample({ mem: fleetMem, cpu: fleetCpu, conn: gotConn ? fleetConn : null,
+      req: gotReq ? fleetReq : null });
   }
 }, 60000);
 setInterval(() => {
@@ -835,7 +839,8 @@ const requestHandler = async (req, res) => {
           versions: v.versions, port: v.port, note: v.note, kind: v.kind })) });
 
       if (p === '/api/db/fleet-history' && req.method === 'GET') {
-        return ok(res, { history: dbaas.getFleetHistory() });
+        return ok(res, { history: dbaas.getFleetHistory({ range: q.get('range'),
+          from: +q.get('from') || null, to: +q.get('to') || null }) });
       }
       // Overview GABUNGAN — semua instance sekaligus (beda dari
       // /api/db/instances/:id/overview yang cuma satu). Dipakai kartu
@@ -905,7 +910,8 @@ const requestHandler = async (req, res) => {
         return ok(res, { log: await dbaas.logs(m[1], +q.get('n') || 200) });
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/history$/))) {
-        return ok(res, { history: dbaas.getHistory(m[1]) });
+        return ok(res, { history: dbaas.getHistory(m[1], { range: q.get('range'),
+          from: +q.get('from') || null, to: +q.get('to') || null }) });
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/overview$/))) {
         const inst = dbaas.getInstance(m[1]);

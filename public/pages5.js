@@ -2,6 +2,84 @@
 /* Basis data sebagai layanan: bikin instance sendiri, kelola tabel,
    ubah baris, dan jalankan SQL — semuanya dari web. */
 
+/* Blok grafik yang bisa di-custom (pilih metrik & rentang waktu) — dipakai
+   BERSAMA oleh overview per-instance dan overview gabungan (fleet), cukup
+   beda fetchHistory(range)-nya. Mirip "custom report" di dashboard
+   Supabase: checkbox metrik + dropdown rentang, tiap metrik yang dicentang
+   dapet kartu grafiknya sendiri (skalanya beda-beda, jadi sengaja tidak
+   ditumpuk satu sumbu). storageKey biar pilihan kepilih tetap diingat
+   (localStorage) tiap buka lagi, per konteks (per-instance vs fleet beda). */
+function customChartBlock(fetchHistory, storageKey) {
+  const METRICS = [
+    { id: 'mem', label: 'Memory', color: '#5b8def', fmt: (v) => bytes(v) },
+    { id: 'cpu', label: 'CPU %', color: '#e5484d', max: 100 },
+    { id: 'req', label: 'Requests (per titik)', color: '#3dbb7d', delta: true },
+    { id: 'conn', label: 'Koneksi aktif', color: '#d99b1c' },
+  ];
+  const RANGE_LABELS = { '30m': '30 menit', '1h': '1 jam', '4h': '4 jam',
+    '1d': '1 hari', '7d': '7 hari', '30d': '1 bulan' };
+
+  let range = localStorage.getItem(storageKey + '.range') || '4h';
+  let selected;
+  try { selected = JSON.parse(localStorage.getItem(storageKey + '.metrics')); } catch {}
+  if (!Array.isArray(selected)) selected = ['mem', 'cpu', 'req'];
+
+  const rangeSel = el('select', { style: 'max-width:120px' },
+    ...Object.entries(RANGE_LABELS).map(([k, l]) => el('option', { value: k }, l)));
+  rangeSel.value = range;
+  const metricBoxes = METRICS.map((m) => {
+    const cb = el('input', { type: 'checkbox', style: 'width:auto;height:auto' });
+    cb.checked = selected.includes(m.id);
+    return { m, cb };
+  });
+  const controls = el('div', { class: 'row', style: 'flex-wrap:wrap;gap:10px;margin-bottom:10px;align-items:center' },
+    el('span', { style: 'font-size:11.5px;color:var(--tx-3)' }, 'Rentang'), rangeSel,
+    el('span', { style: 'font-size:11.5px;color:var(--tx-3);margin-left:6px' }, 'Metrik'),
+    ...metricBoxes.map(({ m, cb }) => el('label',
+      { class: 'row', style: 'gap:4px;cursor:pointer;font-weight:400' },
+      cb, el('span', { style: 'font-size:11.5px' }, m.label))));
+  const grid = el('div', { class: 'grid2' });
+  const wrap = el('div', {}, controls, grid);
+
+  async function refresh() {
+    range = rangeSel.value;
+    selected = metricBoxes.filter((x) => x.cb.checked).map((x) => x.m.id);
+    localStorage.setItem(storageKey + '.range', range);
+    localStorage.setItem(storageKey + '.metrics', JSON.stringify(selected));
+    if (!selected.length) {
+      grid.replaceChildren(el('div', { style: 'font-size:11.5px;color:var(--tx-3)' }, 'Pilih minimal 1 metrik.'));
+      return;
+    }
+    let pts;
+    try { pts = (await fetchHistory(range)).history || []; }
+    catch { grid.replaceChildren(el('div', { class: 'empty' }, 'Gagal memuat grafik.')); return; }
+
+    const cards = [], toDraw = [];
+    for (const id of selected) {
+      const m = METRICS.find((x) => x.id === id);
+      let series;
+      if (m.delta) {
+        const rp = pts.filter((p) => p.req != null);
+        series = rp.slice(1).map((p, idx) => Math.max(0, p.req - rp[idx].req));
+      } else {
+        series = pts.map((p) => p[id]).filter((v) => v != null);
+      }
+      if (series.length < 2) continue;
+      const c = el('canvas');
+      cards.push(el('div', { class: 'card' },
+        el('div', { class: 'card-h' }, el('h3', {}, m.label)), el('div', { class: 'card-b' }, c)));
+      toDraw.push({ c, series, m });
+    }
+    grid.replaceChildren(...(cards.length ? cards : [el('div',
+      { style: 'font-size:11.5px;color:var(--tx-3)' }, 'Belum cukup data buat rentang ini.')]));
+    toDraw.forEach(({ c, series, m }) => chart(c, [{ data: series, color: m.color }], { max: m.max, fmt: m.fmt }));
+  }
+  rangeSel.onchange = refresh;
+  metricBoxes.forEach(({ cb }) => { cb.onchange = refresh; });
+  refresh();
+  return wrap;
+}
+
 VIEWS.database = () => {
   let engines = [], list = [], external = [], sel = null, qText = '';
 
@@ -14,41 +92,35 @@ VIEWS.database = () => {
   mount(el('div', {}, fleetArea, el('div', { class: 'row', style: 'margin-bottom:10px' }, search), wrap));
   liveBadge(20);
 
+  // Blok statistik (kartu angka, di-refresh tiap 20 detik) dipisah dari
+  // blok grafik custom (dibangun SEKALI — kalau ikut dibangun ulang tiap
+  // 20 detik, pilihan rentang/metrik user kepencet-reset terus).
+  const fleetStatsArea = el('div');
+  const fleetChartArea = customChartBlock((range) => api(`/db/fleet-history?range=${range}`), 'db.fleet.chart');
+  let fleetChartMounted = false;
   async function paintFleet() {
     try {
-      const [f, fh] = await Promise.all([api('/db/overview'), api('/db/fleet-history')]);
+      const f = await api('/db/overview');
       if (!f.total) { fleetArea.replaceChildren(); return; }
       const memPct = f.totalMemLimit ? Math.round((f.totalMem / f.totalMemLimit) * 100) : null;
       const stat = (key, icon, val, meta) => el('div', { class: 'stat' },
         el('div', { class: 'k', html: ic(icon, 12) + `<span>${key}</span>` }),
         el('div', { class: 'v', html: val }), meta ? el('div', { class: 'm' }, meta) : '');
       const engineList = Object.entries(f.perEngine).map(([k, n]) => `${n} ${k}`).join(', ');
+      fleetStatsArea.replaceChildren(el('div', { class: 'stats' },
+        stat('Instance', 'db', f.total, `${f.running} running · ${engineList}`),
+        stat('Total ukuran', 'disk', f.totalSize != null ? bytes(f.totalSize) : '—', 'gabungan semua instance'),
+        stat('Total RAM', 'ram', memPct != null ? `${memPct}<small>%</small>` : (f.totalMem ? bytes(f.totalMem) : '—'),
+          f.totalMemLimit ? `${bytes(f.totalMem)} / ${bytes(f.totalMemLimit)}` : ''),
+        stat('Koneksi aktif', 'net', f.totalConn != null ? f.totalConn : '—', 'gabungan semua instance'),
+        stat('Total Requests', 'pulse', f.totalReq, '3 jam terakhir, gabungan')));
 
-      const pts = fh.history || [];
-      const reqPts = pts.filter(p => p.req != null);
-      const reqDeltas = reqPts.slice(1).map((p, idx) => Math.max(0, p.req - reqPts[idx].req));
-      const fc1 = el('canvas'), fc2 = el('canvas');
-      const fcard = (t, c) => el('div', { class: 'card' },
-        el('div', { class: 'card-h' }, el('h3', {}, t)), el('div', { class: 'card-b' }, c));
-      const fCharts = el('div', { class: 'grid2', style: 'margin-top:12px' },
-        fcard('Total RAM semua instance (3 jam)', fc1),
-        fcard('Total Requests per menit (3 jam)', fc2));
-
-      fleetArea.replaceChildren(
-        el('div', { class: 'sec' }, 'Overview semua basis data'),
-        el('div', { class: 'stats' },
-          stat('Instance', 'db', f.total, `${f.running} running · ${engineList}`),
-          stat('Total ukuran', 'disk', f.totalSize != null ? bytes(f.totalSize) : '—', 'gabungan semua instance'),
-          stat('Total RAM', 'ram', memPct != null ? `${memPct}<small>%</small>` : (f.totalMem ? bytes(f.totalMem) : '—'),
-            f.totalMemLimit ? `${bytes(f.totalMem)} / ${bytes(f.totalMemLimit)}` : ''),
-          stat('Koneksi aktif', 'net', f.totalConn != null ? f.totalConn : '—', 'gabungan semua instance'),
-          stat('Total Requests', 'pulse', f.totalReq, '3 jam terakhir, gabungan')),
-        pts.length >= 2 ? fCharts : el('div',
-          { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px' },
-          'Grafik gabungan baru muncul setelah beberapa menit (disampel tiap 60 detik).'));
-
-      if (pts.length >= 2) chart(fc1, [{ data: pts.map(p => p.mem), color: '#5b8def' }], { fmt: v => bytes(v) });
-      if (reqDeltas.length >= 2) chart(fc2, [{ data: reqDeltas, color: '#3dbb7d' }]);
+      if (!fleetChartMounted) {
+        fleetChartMounted = true;
+        fleetArea.replaceChildren(
+          el('div', { class: 'sec' }, 'Overview semua basis data'), fleetStatsArea,
+          el('div', { class: 'sec', style: 'margin-top:14px' }, 'Grafik custom'), fleetChartArea);
+      }
     } catch { fleetArea.replaceChildren(); }
   }
   every(paintFleet, 20000);
@@ -568,21 +640,6 @@ VIEWS.database = () => {
             meta ? el('div', { class: 'm' }, meta) : '', bar || '');
         };
         const memPct = o.memLimit ? Math.round((o.memUsed / o.memLimit) * 100) : null;
-        const pts = h.history || [];
-        // Selisih antar sampel = jumlah request DI JENDELA ITU (mis. 60
-        // detik) — persis konsep grafik "Total Requests" Supabase, tapi
-        // ditarik dari statistik transaksi asli mesin basis datanya
-        // sendiri (pg_stat_database dkk), jadi nangkep traffic dari
-        // APLIKASI KAMU, bukan cuma yang dijalankan lewat tab SQL panel.
-        const reqPts = pts.filter(p => p.req != null);
-        const reqDeltas = reqPts.slice(1).map((p, idx) => Math.max(0, p.req - reqPts[idx].req));
-
-        const c1 = el('canvas'), c2 = el('canvas'), c3 = el('canvas');
-        const card = (t, c) => el('div', { class: 'card' },
-          el('div', { class: 'card-h' }, el('h3', {}, t)), el('div', { class: 'card-b' }, c));
-        const chartsWrap = el('div', { class: 'grid2' },
-          card('Requests (per menit, 3 jam terakhir)', c3),
-          card('Memory (3 jam terakhir)', c1), card('CPU % (3 jam terakhir)', c2));
 
         body.replaceChildren(
           el('div', { class: 'stats' },
@@ -597,21 +654,12 @@ VIEWS.database = () => {
             stat('Total Requests', 'pulse', o.reqTotal != null ? o.reqTotal : '—',
               o.successRate != null ? `${o.successRate}% sukses (3 jam)`
                 : o.reqTotal != null ? '3 jam terakhir' : 'belum ada data')),
-          pts.length >= 2 ? chartsWrap : el('div', {
-            style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px' },
-            'Grafik baru muncul setelah beberapa menit (disampel tiap 60 detik).'),
+          el('div', { class: 'sec', style: 'margin-top:14px' }, 'Grafik custom'),
+          customChartBlock((range) => api(`/db/instances/${i.id}/history?range=${range}`), 'db.inst.chart.' + i.id),
           el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6' },
             'Dibuat ' + new Date(o.created).toLocaleString('id-ID') +
             '. "Total Requests" dihitung dari statistik transaksi mesin basis datanya sendiri '
             + '(bukan cuma tab SQL panel) — mencerminkan traffic dari aplikasi kamu juga.'));
-
-        if (pts.length >= 2) {
-          chart(c1, [{ data: pts.map(p => p.mem), color: '#5b8def' }], { fmt: v => bytes(v) });
-          chart(c2, [{ data: pts.map(p => p.cpu), color: '#e5484d' }], { max: 100 });
-        }
-        if (reqDeltas.length >= 2) {
-          chart(c3, [{ data: reqDeltas, color: '#3dbb7d' }]);
-        }
       } catch (e) { body.replaceChildren(el('div', { class: 'empty' }, e.message)); }
     }
 

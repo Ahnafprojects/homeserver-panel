@@ -1436,6 +1436,14 @@ VIEWS.monitor = () => {
 
   function detail(c) {
     const hist = c.hist || [];
+    const pubToggle = el('input', { type: 'checkbox', style: 'width:auto;height:auto' });
+    pubToggle.checked = !!c.public;
+    pubToggle.onchange = async () => {
+      try { await api(`/monitor/checks/${c.id}/public`, { method: 'POST',
+        body: JSON.stringify({ public: pubToggle.checked }) });
+        toast(pubToggle.checked ? 'Ditampilkan di /status' : 'Disembunyikan dari /status'); load(); }
+      catch (e) { toast(e.message); pubToggle.checked = !pubToggle.checked; }
+    };
     const canvas = el('canvas');
     const outages = [];
     hist.forEach((x, i2) => {
@@ -1455,7 +1463,15 @@ VIEWS.monitor = () => {
         : el('div', { class: 'empty', style: 'padding:22px' }, 'No outages recorded')),
       el('div', { class: 'sec' }, 'Target'),
       el('div', { class: 'card' }, el('div', { class: 'card-b mono', style: 'font-size:11.5px' },
-        c.type === 'tcp' ? `${c.host}:${c.port}` : c.url))));
+        c.type === 'tcp' ? `${c.host}:${c.port}` : c.url)),
+      el('div', { class: 'sec' }, 'Halaman status publik'),
+      el('div', { class: 'card' }, el('div', { class: 'card-b' },
+        el('label', { class: 'row', style: 'cursor:pointer;font-weight:400' },
+          pubToggle, el('div', {},
+            el('div', { style: 'font-size:12.5px;color:var(--tx)' }, 'Tampilkan di /status'),
+            el('div', { style: 'font-size:11.5px;color:var(--tx-3)' },
+              'Halaman publik cuma nunjukin nama & status up/down — URL/host internal tidak ikut ditampilkan.')))))
+    ));
     setTimeout(() => chart(canvas, [{ data: hist.map(x => x.ms), color: '#5b8def' }],
       { height: 120, fmt: (v) => Math.round(v) + 'ms' }), 60);
   }

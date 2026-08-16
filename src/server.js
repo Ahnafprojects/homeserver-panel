@@ -659,7 +659,7 @@ const ipOf = (req) => {
 };
 
 // Rute yang boleh diakses tanpa sesi.
-const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup']);
+const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup', '/api/status/public']);
 
 function sessionOf(req) {
   const t = cookieOf(req, 'sid');
@@ -2473,6 +2473,22 @@ const requestHandler = async (req, res) => {
       }
 
       // ---- Pemantauan ----
+      // Ringkasan status buat halaman publik (/status) — TANPA sesi. Cuma
+      // nama, status up/down, dan uptime % (24 jam & 7 hari) buat check
+      // yang ditandai public=true; URL/host internalnya TIDAK ikut
+      // dikirim, biar ga bocor ke siapa pun yang buka halaman ini.
+      if (p === '/api/status/public') {
+        const pub = checks.filter((c) => c.public);
+        return ok(res, {
+          services: pub.map((c) => ({
+            name: c.name, up: c.up !== false,
+            w24: uptimeWindow(c.hist, 86400000),
+            w7d: uptimeWindow(c.hist, 7 * 86400000),
+          })),
+          allUp: pub.every((c) => c.up !== false),
+          updatedAt: Date.now(),
+        });
+      }
       if (p === '/api/monitor/checks') {
         if (req.method === 'GET') {
           return ok(res, { checks: checks.map(c => ({
@@ -2487,13 +2503,23 @@ const requestHandler = async (req, res) => {
         if (req.method === 'POST') {
           const b = await readJson(req);
           checks.push({ id: Date.now().toString(36), name: b.name, type: b.type || 'http',
-            url: b.url, host: b.host, port: b.port, hist: [] });
+            url: b.url, host: b.host, port: b.port, hist: [], public: false });
           saveChecks(); runChecks();
           return ok(res);
         }
       }
       if ((m = p.match(/^\/api\/monitor\/checks\/([^/]+)$/)) && req.method === 'DELETE') {
         checks = checks.filter((c) => c.id !== m[1]); saveChecks();
+        return ok(res);
+      }
+      // Tampil/tidak di halaman status publik (/status) — opt-in per check,
+      // biar URL/host internal ga kebuka ke publik kecuali sengaja dipilih.
+      if ((m = p.match(/^\/api\/monitor\/checks\/([^/]+)\/public$/)) && req.method === 'POST') {
+        const b = await readJson(req);
+        const c = checks.find((x) => x.id === m[1]);
+        if (!c) return fail(res, 'Check not found', 404);
+        c.public = !!b.public;
+        saveChecks();
         return ok(res);
       }
 
@@ -2519,6 +2545,67 @@ const requestHandler = async (req, res) => {
           { key: name });
       })().catch(() => {});
       return;
+    }
+
+    // ---------- Halaman status publik ----------
+    // Sengaja HTML statis + fetch client-side (bukan di-render server-side
+    // dari sini) -- lebih gampang dijaga tampilannya tetap sinkron kalau
+    // suatu saat mau diubah, dan otomatis kebaca ulang tiap 30 detik tanpa
+    // reload manual.
+    if (p === '/status' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(`<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Status</title>
+<style>
+  :root{color-scheme:light dark}
+  body{font-family:ui-sans-serif,system-ui,sans-serif;max-width:640px;margin:0 auto;padding:32px 20px;
+    background:#0b0d10;color:#e6e8eb}
+  h1{font-size:20px;margin:0 0 6px}
+  .sub{color:#9aa0ac;font-size:13px;margin-bottom:24px}
+  .banner{padding:14px 16px;border-radius:10px;margin-bottom:20px;font-weight:600;font-size:14px}
+  .banner.ok{background:#0f2e1c;color:#4ade80}
+  .banner.bad{background:#3a1414;color:#f87171}
+  .row{display:flex;align-items:center;gap:10px;padding:14px 16px;border:1px solid #22262c;
+    border-radius:10px;margin-bottom:8px}
+  .dot{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+  .dot.up{background:#4ade80}.dot.down{background:#f87171}
+  .name{flex:1;font-size:14px}
+  .pct{font-size:12.5px;color:#9aa0ac}
+  .empty{color:#9aa0ac;font-size:13px;padding:20px 0;text-align:center}
+  .footer{margin-top:24px;font-size:11.5px;color:#6b7280;text-align:center}
+</style></head>
+<body>
+  <h1>Status Layanan</h1>
+  <div class="sub" id="updated">Memuat…</div>
+  <div id="banner"></div>
+  <div id="list"></div>
+  <div class="footer">Diperbarui otomatis tiap 30 detik</div>
+<script>
+async function load() {
+  try {
+    const d = await fetch('/api/status/public').then(x => x.json());
+    document.getElementById('updated').textContent = 'Terakhir dicek: ' + new Date(d.updatedAt).toLocaleString('id-ID');
+    const banner = document.getElementById('banner');
+    const list = document.getElementById('list');
+    if (!d.services.length) {
+      banner.innerHTML = '';
+      list.innerHTML = '<div class="empty">Belum ada layanan yang ditampilkan publik.</div>';
+      return;
+    }
+    banner.innerHTML = '<div class="banner ' + (d.allUp ? 'ok' : 'bad') + '">'
+      + (d.allUp ? '✓ Semua layanan normal' : '⚠ Ada layanan yang sedang bermasalah') + '</div>';
+    list.innerHTML = d.services.map(function(s) {
+      var pct = s.w7d ? s.w7d.pct + '% (7 hari)' : 'belum ada data';
+      return '<div class="row"><div class="dot ' + (s.up ? 'up' : 'down') + '"></div>'
+        + '<div class="name">' + s.name + '</div><div class="pct">' + pct + '</div></div>';
+    }).join('');
+  } catch (e) {
+    document.getElementById('updated').textContent = 'Gagal memuat status.';
+  }
+}
+load(); setInterval(load, 30000);
+</script></body></html>`);
     }
 
     // ---------- Berkas statis ----------

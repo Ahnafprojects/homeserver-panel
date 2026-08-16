@@ -503,13 +503,50 @@ VIEWS.database = () => {
         { method: 'POST', body: JSON.stringify({ database: curDb, ...body }) });
     }
 
+    /* Overview: kondisi instance sekilas — ukuran, RAM/CPU vs batasnya,
+       koneksi aktif, dan ringkasan kueri. Tab pertama pas buka satu basis
+       data, biar ga langsung disodorin daftar tabel mentah. */
+    async function viewOverview(body) {
+      body.replaceChildren(el('div', { class: 'empty' }, 'Loading…'));
+      try {
+        const o = await api(`/db/instances/${i.id}/overview`);
+        const stat = (key, icon, val, meta, pct) => {
+          const bar = pct != null ? el('div', { class: 'bar' },
+            el('i', { style: `width:${Math.min(pct, 100)}%`,
+              class: pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '' })) : null;
+          return el('div', { class: 'stat' },
+            el('div', { class: 'k', html: ic(icon, 12) + `<span>${key}</span>` }),
+            el('div', { class: 'v', html: val }),
+            meta ? el('div', { class: 'm' }, meta) : '', bar || '');
+        };
+        const memPct = o.memLimit ? Math.round((o.memUsed / o.memLimit) * 100) : null;
+        const qs = o.queryStats || {};
+        body.replaceChildren(
+          el('div', { class: 'stats' },
+            stat('Status', 'pulse',
+              o.state === 'running' ? 'Running' : (o.state || 'unknown'),
+              o.statusText || ''),
+            stat('Ukuran', 'db', o.size || '—', `${o.engine} ${o.version}`),
+            stat('Memory', 'ram', memPct != null ? `${memPct}<small>%</small>` : '—',
+              o.memLimit ? `${bytes(o.memUsed)} / ${bytes(o.memLimit)}` : 'tidak terbaca', memPct),
+            stat('CPU', 'cpu', `${o.cpuPercent ?? 0}<small>%</small>`, 'saat ini'),
+            stat('Koneksi aktif', 'net', o.connections != null ? o.connections : '—', ''),
+            stat('Kueri (lewat panel)', 'clock', qs.total || 0,
+              qs.total ? `rata-rata ${qs.avgMs}ms · ${qs.slow || 0} lambat · ${qs.errors || 0} error` : 'belum ada riwayat')),
+          el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:12px;line-height:1.6' },
+            'Dibuat ' + new Date(o.created).toLocaleString('id-ID') +
+            '. "Kueri" cuma menghitung yang dijalankan lewat tab SQL panel ini, bukan dari aplikasi kamu.'));
+      } catch (e) { body.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+    }
+
     const T = tabs([
+      ...(i.external ? [] : [{ id: 'overview', n: 'Overview', i: 'pulse' }]),
       { id: 'tables', n: 'Tabel', i: 'db' },
       { id: 'sql', n: 'SQL', i: 'term' },
       { id: 'qlog', n: 'Riwayat kueri', i: 'clock' },
       { id: 'dbs', n: 'Databases', i: 'layers' },
       ...(i.external ? [] : [{ id: 'logs', n: 'Logs', i: 'logs' }]),
-    ], (id, body) => ({ tables: viewTables, sql: viewSql, qlog: viewQueryLog,
+    ], (id, body) => ({ overview: viewOverview, tables: viewTables, sql: viewSql, qlog: viewQueryLog,
       dbs: viewDbs, logs: viewLogs })[id](body));
 
     wrap.replaceChildren(el('div', { class: 'row', style: 'margin-bottom:12px' },

@@ -238,12 +238,68 @@ export async function sizeOf(id) {
     if (e.kind === 'postgres') {
       const r = await runP('docker', ['exec', i.container, 'psql', '-U', i.user,
         '-d', i.database, '-tAc', 'SELECT pg_size_pretty(pg_database_size(current_database()))']);
-      return r.out.trim();
+      return r.out.trim() || null;
     }
-    const r = await runP('sh', ['-c',
-      `docker system df -v --format '{{json .}}' 2>/dev/null | head -1`]);
+    if (e.kind === 'mysql') {
+      const r = await runP('docker', ['exec', '-e', `MYSQL_PWD=${i.password}`, i.container, 'mysql',
+        '-u', i.user, '-N', '-e',
+        `SELECT ROUND(SUM(data_length+index_length)) FROM information_schema.tables WHERE table_schema='${i.database}'`]);
+      const bytes = parseInt(r.out.trim(), 10);
+      return Number.isFinite(bytes) ? prettyBytes(bytes) : null;
+    }
+    if (i.engine === 'mongo') {
+      const r = await runP('docker', ['exec', i.container, 'mongosh', '--quiet', i.database,
+        '--eval', 'db.stats().dataSize']);
+      const bytes = parseFloat(r.out.trim());
+      return Number.isFinite(bytes) ? prettyBytes(bytes) : null;
+    }
+    if (i.engine === 'redis') {
+      const r = await runP('docker', ['exec', i.container, 'redis-cli', '-a', i.password,
+        '--no-auth-warning', 'INFO', 'memory']);
+      const m = r.out.match(/used_memory:(\d+)/);
+      return m ? prettyBytes(+m[1]) : null;
+    }
     return null;
   } catch { return null; }
+}
+const prettyBytes = (n) => {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return `${n.toFixed(n < 10 && i > 0 ? 1 : 0)} ${u[i]}`;
+};
+
+/* Jumlah koneksi aktif ke instance — beda query per mesin. */
+export async function connectionCount(id) {
+  const i = getInstance(id);
+  const e = ENGINES[i.engine];
+  try {
+    if (e.kind === 'postgres') {
+      const r = await runP('docker', ['exec', i.container, 'psql', '-U', i.user, '-d', i.database,
+        '-tAc', 'SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()']);
+      const n = parseInt(r.out.trim(), 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (e.kind === 'mysql') {
+      const r = await runP('docker', ['exec', '-e', `MYSQL_PWD=${i.password}`, i.container, 'mysql',
+        '-u', i.user, '-N', '-e', 'SHOW STATUS LIKE "Threads_connected"']);
+      const n = parseInt(r.out.trim().split(/\s+/)[1], 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (i.engine === 'redis') {
+      const r = await runP('docker', ['exec', i.container, 'redis-cli', '-a', i.password,
+        '--no-auth-warning', 'INFO', 'clients']);
+      const m = r.out.match(/connected_clients:(\d+)/);
+      return m ? +m[1] : null;
+    }
+    return null; // mongo: butuh perintah admin terpisah, dilewati biar simpel
+  } catch { return null; }
+}
+
+/* Batas memori container basis data — ditentukan pas create() (lihat di
+   atas), disamakan lagi di sini biar Overview bisa nunjukin "X / limit". */
+export function memLimitOf(id) {
+  const i = getInstance(id);
+  return i.engine === 'mongo' ? '768m' : '512m';
 }
 
 

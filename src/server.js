@@ -845,6 +845,26 @@ const requestHandler = async (req, res) => {
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/logs$/))) {
         return ok(res, { log: await dbaas.logs(m[1], +q.get('n') || 200) });
       }
+      if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/overview$/))) {
+        const inst = dbaas.getInstance(m[1]);
+        const [size, connections, all] = await Promise.all([
+          dbaas.sizeOf(m[1]).catch(() => null),
+          dbaas.connectionCount(m[1]).catch(() => null),
+          dbaas.withStatus().catch(() => []),
+        ]);
+        const status = all.find(x => x.id === m[1]) || {};
+        let cpu = 0, mem = { used: 0, limit: 0 };
+        try {
+          const s = await docker.statsOnce(inst.container);
+          cpu = cpuPercent(s); mem = memUsage(s);
+        } catch {}
+        return ok(res, {
+          engine: inst.engine, version: inst.version, created: inst.created,
+          state: status.state, statusText: status.status, size,
+          connections, memUsed: mem.used, memLimit: mem.limit || null,
+          cpuPercent: cpu, queryStats: dbaas.queryStats(m[1]),
+        });
+      }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/rotate$/)) && req.method === 'POST') {
         await dbaas.rotatePassword(m[1]);
         auth.audit(ses.username, 'db-ganti-sandi', m[1]);

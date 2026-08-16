@@ -1675,7 +1675,42 @@ const requestHandler = async (req, res) => {
         });
       }
 
+      // ---- Riwayat backup (dipakai grafik/overview di Vault & Backups) ----
+      // File JSON-lines ditulis /usr/local/bin/server-backup (host, tiap
+      // run tengah malam) -- bukan disampling panel kayak grafik database,
+      // karena backup cuma jalan sekali sehari, bukan tiap menit.
+      if (p === '/api/backups/history' && req.method === 'GET') {
+        let lines = [];
+        try {
+          const raw = await fs.readFile(path.join(STATE_DIR, 'backup-history.json'), 'utf8');
+          lines = raw.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+            .filter(Boolean);
+        } catch {}
+        const ok2 = lines.filter((l) => l.ok);
+        const avgSize = ok2.length ? Math.round(ok2.reduce((a, l) => a + (l.sizeBytes || 0), 0) / ok2.length) : null;
+        const avgXfer = ok2.length ? Math.round(ok2.reduce((a, l) => a + (l.xferBytes || 0), 0) / ok2.length) : null;
+        return ok(res, {
+          runs: lines.slice(-90), // ~3 bulan kalau backup harian
+          total: lines.length, successCount: ok2.length,
+          successRate: lines.length ? Math.round((ok2.length / lines.length) * 100) : null,
+          avgSizeBytes: avgSize, avgXferBytes: avgXfer,
+        });
+      }
+
       // ---- Google Drive (off-site backup, multi-akun) ----
+      // Client ID/Secret OAuth-nya sendiri disimpan lewat brankas Secrets
+      // (bukan cuma .env) — biar panel ini bisa dipakai siapa saja tanpa
+      // perlu akses shell/edit docker-compose, cukup isi lewat halaman ini.
+      if (p === '/api/gdrive/config' && req.method === 'GET') {
+        return ok(res, { configured: gdrive.configured(), redirectUri: gdrive.redirectUri() });
+      }
+      if (p === '/api/gdrive/config' && req.method === 'POST') {
+        const b = await readJson(req);
+        if (!b.clientId || !b.clientSecret) return fail(res, 'Client ID dan Client Secret wajib diisi', 400);
+        gdrive.setCredentials(b.clientId, b.clientSecret);
+        auth.audit(ses.username, 'gdrive-config', 'Client ID/Secret diperbarui');
+        return ok(res, { configured: gdrive.configured(), redirectUri: gdrive.redirectUri() });
+      }
       if (p === '/api/gdrive/accounts' && req.method === 'GET') {
         const list = gdrive.listAccounts();
         const withQuota = await Promise.all(list.map(async (a) => {

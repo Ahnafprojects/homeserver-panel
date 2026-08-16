@@ -586,9 +586,36 @@ VIEWS.vault = () => {
       try {
         const g = await api('/gdrive/accounts');
         if (!g.configured) {
-          gdriveArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b',
-            style: 'font-size:11.5px;color:var(--tx-3)' },
-            'Belum diset (GDRIVE_CLIENT_ID/SECRET). Minta dibuatkan OAuth client di Google Cloud Console dulu.')));
+          const cfg = await api('/gdrive/config').catch(() => ({ redirectUri: '' }));
+          const idInp = el('input', { placeholder: 'xxxxx.apps.googleusercontent.com' });
+          const secInp = el('input', { type: 'password', placeholder: 'GOCSPX-…' });
+          const uriBox = el('input', { readonly: true, value: cfg.redirectUri, style: 'font-family:var(--mono);font-size:11px' });
+          const copyBtn = el('button', { class: 'btn', html: ic('code', 13) + '<span>Copy</span>' });
+          copyBtn.onclick = () => { navigator.clipboard?.writeText(cfg.redirectUri); toast('Disalin'); };
+          const saveBtn = el('button', { class: 'btn pri', html: ic('lock', 13) + '<span>Simpan</span>' });
+          const msg = el('div', { style: 'font-size:11.5px;min-height:16px;margin-top:6px' });
+          saveBtn.onclick = async () => {
+            if (!idInp.value.trim() || !secInp.value.trim()) { msg.style.color = 'var(--bad)';
+              msg.textContent = 'Client ID dan Secret wajib diisi'; return; }
+            saveBtn.disabled = true;
+            try {
+              await api('/gdrive/config', { method: 'POST',
+                body: JSON.stringify({ clientId: idInp.value.trim(), clientSecret: secInp.value.trim() }) });
+              toast('Tersimpan'); paintGdrive();
+            } catch (e) { msg.style.color = 'var(--bad)'; msg.textContent = e.message; }
+            finally { saveBtn.disabled = false; }
+          };
+          gdriveArea.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'card-b' },
+            el('div', { style: 'font-size:12px;color:var(--tx-2);margin-bottom:12px;line-height:1.6' },
+              'Belum diset. Bikin OAuth Client di ',
+              el('a', { href: 'https://console.cloud.google.com/apis/credentials', target: '_blank' }, 'Google Cloud Console'),
+              ' (Application type: Web application), tempel redirect URI di bawah ini persis, '
+              + 'lalu simpan Client ID & Secret-nya di sini.'),
+            el('div', { class: 'field' }, el('label', {}, 'Authorized redirect URI'),
+              el('div', { class: 'row' }, uriBox, copyBtn)),
+            el('div', { class: 'field' }, el('label', {}, 'Client ID'), idInp),
+            el('div', { class: 'field' }, el('label', {}, 'Client Secret'), secInp),
+            msg, el('div', { class: 'row' }, saveBtn))));
           return;
         }
         const connect = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Connect Google Drive</span>' });
@@ -641,6 +668,45 @@ VIEWS.vault = () => {
     }
     paintGdrive();
 
+    // ── Overview & grafik riwayat backup (HDD + Drive) ── data-nya dari
+    // log yang ditulis /usr/local/bin/server-backup tiap run (bukan
+    // disampling panel — backup cuma jalan sekali sehari, beda dari
+    // grafik database yang disampling tiap menit).
+    const backupHistArea = el('div', { style: 'margin-bottom:16px' });
+    const BACKUP_METRICS = [
+      { id: 'size', label: 'Ukuran snapshot', color: '#5b8def', fmt: (v) => bytes(v) },
+      { id: 'xfer', label: 'Data baru ditulis', color: '#3dbb7d', fmt: (v) => bytes(v) },
+    ];
+    async function fetchBackupHistory(range) {
+      const r = await api('/backups/history');
+      const days = range === '90d' ? 90 : 30;
+      const since = Date.now() - days * 86400000;
+      const pts = r.runs.filter((x) => x.ok && x.t >= since)
+        .map((x) => ({ t: x.t, size: x.sizeBytes, xfer: x.xferBytes }));
+      return { history: pts };
+    }
+    async function paintBackupHist() {
+      try {
+        const r = await api('/backups/history');
+        if (!r.total) { backupHistArea.replaceChildren(); return; }
+        const stat = (key, icon, val, meta) => el('div', { class: 'stat' },
+          el('div', { class: 'k', html: ic(icon, 12) + `<span>${key}</span>` }),
+          el('div', { class: 'v', html: val }), meta ? el('div', { class: 'm' }, meta) : '');
+        backupHistArea.replaceChildren(
+          el('div', { class: 'sec' }, 'Overview & riwayat backup'),
+          el('div', { class: 'stats' },
+            stat('Total run', 'clock', r.total, `${r.successCount} berhasil`),
+            stat('Success rate', 'pulse', r.successRate != null ? `${r.successRate}<small>%</small>` : '—', ''),
+            stat('Rata-rata ukuran', 'disk', r.avgSizeBytes != null ? bytes(r.avgSizeBytes) : '—', 'per snapshot'),
+            stat('Rata-rata data baru', 'db', r.avgXferBytes != null ? bytes(r.avgXferBytes) : '—', 'per hari')),
+          el('div', { class: 'sec', style: 'margin-top:14px' }, 'Grafik custom'),
+          customChartBlock(fetchBackupHistory, 'db.backup.chart',
+            { metrics: BACKUP_METRICS, defaultMetrics: ['size', 'xfer'],
+              rangeLabels: { '30d': '30 hari terakhir', '90d': '90 hari terakhir' }, defaultRange: '30d' }));
+      } catch { backupHistArea.replaceChildren(); }
+    }
+    paintBackupHist();
+
     const total = backups.reduce((a, b2) => a + b2.size, 0);
     const countPill = el('span', { class: 'pill' }, `${backups.length} files`);
     const listArea = el('div');
@@ -681,6 +747,7 @@ VIEWS.vault = () => {
       hddArea,
       el('div', { class: 'sec' }, 'Off-site: Google Drive'),
       gdriveArea,
+      backupHistArea,
       el('div', { class: 'sec' }, 'Backup manual'),
       el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
         countPill, el('span', { class: 'pill' }, bytes(total)),

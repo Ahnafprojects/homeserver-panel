@@ -17,15 +17,25 @@ import * as admin from './admin.js';
 
 const STATE = process.env.STATE_DIR || '/state';
 const FILE = path.join(STATE, 'gdrive-accounts.json');
-const CLIENT_ID = process.env.GDRIVE_CLIENT_ID || '';
-const CLIENT_SECRET = process.env.GDRIVE_CLIENT_SECRET || '';
-const REDIRECT_URI = process.env.GDRIVE_REDIRECT_URI
+// Diambil dari brankas Secrets (bisa diisi lewat web, Vault & Backups) DULU,
+// baru jatuh ke env var (.env di deploy/) kalau belum pernah diisi lewat
+// web — supaya panel ini bisa jadi TEMPLATE: orang lain yang deploy sendiri
+// tinggal isi Client ID/Secret-nya lewat UI, tanpa perlu akses shell/edit
+// docker-compose sama sekali.
+const clientId = () => admin.getSecret('GDRIVE_CLIENT_ID') || process.env.GDRIVE_CLIENT_ID || '';
+const clientSecret = () => admin.getSecret('GDRIVE_CLIENT_SECRET') || process.env.GDRIVE_CLIENT_SECRET || '';
+const REDIRECT_URI = () => process.env.GDRIVE_REDIRECT_URI
   || `https://www.${process.env.TUNNEL_DOMAIN || 'ahnaf.cloud'}/api/gdrive/oauth/callback`;
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SCOPES = 'https://www.googleapis.com/auth/drive.file openid email';
 
-export const configured = () => !!(CLIENT_ID && CLIENT_SECRET);
+export const configured = () => !!(clientId() && clientSecret());
+export function setCredentials(id, secret) {
+  admin.setSecret('GDRIVE_CLIENT_ID', String(id || '').trim());
+  admin.setSecret('GDRIVE_CLIENT_SECRET', String(secret || '').trim());
+}
+export const redirectUri = () => REDIRECT_URI();
 
 let accounts = [];
 function load() {
@@ -46,7 +56,7 @@ load();
 export function authUrl(state) {
   if (!configured()) throw new Error('GDRIVE_CLIENT_ID/GDRIVE_CLIENT_SECRET belum diset');
   const params = new URLSearchParams({
-    client_id: CLIENT_ID, redirect_uri: REDIRECT_URI, response_type: 'code',
+    client_id: clientId(), redirect_uri: REDIRECT_URI(), response_type: 'code',
     scope: SCOPES, access_type: 'offline',
     // "consent" dipaksa terus supaya refresh_token SELALU ikut dikirim —
     // tanpa ini, Google cuma ngasih refresh_token pas otorisasi PERTAMA
@@ -59,8 +69,8 @@ export function authUrl(state) {
 export async function handleCallback(code) {
   const r = await fetch(TOKEN_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ code, client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI, grant_type: 'authorization_code' }),
+    body: new URLSearchParams({ code, client_id: clientId(), client_secret: clientSecret(),
+      redirect_uri: REDIRECT_URI(), grant_type: 'authorization_code' }),
   });
   const tok = await r.json();
   if (!r.ok) throw new Error(tok.error_description || tok.error || 'Tukar kode OAuth gagal');
@@ -89,7 +99,7 @@ async function ensureFreshToken(acc) {
   if (acc.token.expiry > Date.now() + 60000) return acc.token.access_token;
   const r = await fetch(TOKEN_URL, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET,
+    body: new URLSearchParams({ client_id: clientId(), client_secret: clientSecret(),
       refresh_token: acc.token.refresh_token, grant_type: 'refresh_token' }),
   });
   const tok = await r.json();
@@ -133,7 +143,7 @@ export async function writeRcloneConfig(destFile) {
     const tokenObj = { access_token: acc.token.access_token, token_type: 'Bearer',
       refresh_token: acc.token.refresh_token, expiry: new Date(acc.token.expiry).toISOString() };
     lines.push(`[panel-${acc.id}]`, 'type = drive', 'scope = drive.file',
-      `client_id = ${CLIENT_ID}`, `client_secret = ${CLIENT_SECRET}`,
+      `client_id = ${clientId()}`, `client_secret = ${clientSecret()}`,
       `token = ${JSON.stringify(tokenObj)}`, '');
   }
   fs.mkdirSync(path.dirname(destFile), { recursive: true });

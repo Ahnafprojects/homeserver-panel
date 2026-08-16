@@ -1025,6 +1025,20 @@ const requestHandler = async (req, res) => {
           reqTotal, reqErrors, successRate,
         });
       }
+      // Clone: instance BARU berisi salinan schema+data instance ini --
+      // buat staging sebelum ubah skema production, dst.
+      if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/clone$/)) && req.method === 'POST') {
+        const b = await readJson(req);
+        if (!b.name || !/^[a-z0-9-]{2,}$/.test(b.name)) {
+          return fail(res, 'Nama instance baru: huruf kecil/angka/strip, minimal 2 karakter', 400);
+        }
+        try {
+          const dest = await dbaas.cloneInstance(m[1], b.name);
+          auth.audit(ses.username, 'db-clone', `${m[1]} -> ${dest.name}`);
+          ev.emit('db.backup_ok', `Basis data <code>${dest.name}</code> dibuat sebagai clone dari instance lain.`);
+          return ok(res, dest);
+        } catch (e) { return fail(res, e.message, 400); }
+      }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/rotate$/)) && req.method === 'POST') {
         await dbaas.rotatePassword(m[1]);
         auth.audit(ses.username, 'db-ganti-sandi', m[1]);

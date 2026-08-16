@@ -513,6 +513,61 @@ export async function dumpDatabase(id, { schemaOnly, dataOnly, table } = {}) {
   return r.out;
 }
 
+/* Instance baru siap nerima koneksi? (create() cuma "docker run -d", ga
+   nunggu database-nya beneran hidup — postgres/mariadb butuh beberapa
+   detik pas pertama nyala). Dicoba tiap detik sampai maxMs. */
+async function waitReady(inst, maxMs = 30000) {
+  const e = ENGINES[inst.engine];
+  const start = Date.now();
+  while (Date.now() - start < maxMs) {
+    try {
+      if (e.kind === 'postgres') {
+        const r = await runP('docker', ['exec', inst.container, 'pg_isready', '-U', inst.user]);
+        if (r.code === 0) return true;
+      } else if (e.kind === 'mysql') {
+        const r = await runP('docker', ['exec', '-e', `MYSQL_PWD=${inst.password}`, inst.container,
+          'mariadb-admin', 'ping', '-u', inst.user]);
+        if (r.code === 0) return true;
+      } else {
+        return true; // mongo/redis: dianggap cukup begitu container jalan
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+/* Clone instance basis data (buat staging sebelum ubah skema production,
+   dst) — dump SUMBER (dumpDatabase, sudah ada di atas), bikin instance
+   BARU KOSONG (create(), sudah ada juga), restore dump ke situ. Dump
+   ditulis ke FILE dulu (docker cp), bukan lewat exec -i / stdin --
+   menghindari konflik stdin sama sudo -S kalau dipanggil dari konteks
+   yang juga butuh stdin buat hal lain (lihat catatan sesi soal ini). */
+export async function cloneInstance(sourceId, newName) {
+  const src = getInstance(sourceId);
+  const dump = await dumpDatabase(sourceId, {});
+  const dest = await create({ name: newName, engine: src.engine, version: src.version,
+    database: src.database, expose: false });
+  const ready = await waitReady(dest);
+  if (!ready) throw new Error('Instance baru tidak siap menerima koneksi dalam 30 detik');
+
+  const tmpFile = path.join('/tmp', `clone-${dest.id}.sql`);
+  fs.writeFileSync(tmpFile, dump);
+  try {
+    const cp = await runP('docker', ['cp', tmpFile, `${dest.container}:/tmp/restore.sql`]);
+    if (cp.code !== 0) throw new Error('Gagal salin dump ke container baru: ' + cp.out);
+    const e = ENGINES[src.engine];
+    const r = e.kind === 'postgres'
+      ? await runP('docker', ['exec', dest.container, 'psql', '-U', dest.user, '-d', dest.database, '-f', '/tmp/restore.sql'])
+      : await runP('docker', ['exec', '-e', `MYSQL_PWD=${dest.password}`, dest.container,
+          'sh', '-c', `mariadb -u${dest.user} ${dest.database} < /tmp/restore.sql`]);
+    if (r.code !== 0) { await destroy(dest.id, false); throw new Error('Restore ke instance baru gagal: ' + (r.out || '').slice(0, 400)); }
+  } finally {
+    try { fs.unlinkSync(tmpFile); } catch {}
+  }
+  return { ...dest, password: undefined };
+}
+
 /* Pembaca CSV sederhana yang menghormati tanda kutip dan koma di dalam nilai. */
 export function parseCsv(text) {
   const rows = [];

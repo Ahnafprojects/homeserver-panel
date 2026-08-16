@@ -674,10 +674,33 @@ VIEWS.database = () => {
     ], (id, body) => ({ overview: viewOverview, tables: viewTables, sql: viewSql, qlog: viewQueryLog,
       dbs: viewDbs, logs: viewLogs })[id](body));
 
+    const cloneBtn = i.external ? null : el('button', { class: 'btn', html: ic('layers', 13) + '<span>Clone</span>' });
+    if (cloneBtn) cloneBtn.onclick = () => {
+      const name = el('input', { placeholder: `${i.name}-staging` });
+      const msg = el('div', { style: 'font-size:11.5px;min-height:16px;margin-top:6px' });
+      const b = el('button', { class: 'btn pri' }, 'Buat clone');
+      b.onclick = async () => {
+        if (!name.value.trim()) { msg.style.color = 'var(--bad)'; msg.textContent = 'Nama wajib diisi'; return; }
+        b.disabled = true; b.textContent = 'Cloning… (bisa beberapa detik)';
+        try {
+          await api(`/db/instances/${i.id}/clone`, { method: 'POST', body: JSON.stringify({ name: name.value.trim() }) });
+          toast('Clone dibuat'); closeDrawer(); load();
+        } catch (e) { msg.style.color = 'var(--bad)'; msg.textContent = e.message; }
+        finally { b.disabled = false; b.textContent = 'Buat clone'; }
+      };
+      openDrawer('Clone ' + i.name, el('div', {},
+        el('div', { style: 'font-size:12px;color:var(--tx-2);margin-bottom:12px;line-height:1.6' },
+          'Bikin instance BARU berisi salinan penuh schema + data instance ini — buat coba-coba/staging '
+          + 'sebelum ubah sesuatu di production, tanpa risiko.'),
+        el('div', { class: 'field' }, el('label', {}, 'Nama instance baru'), name),
+        msg, el('div', { class: 'row' }, b)));
+    };
+
     wrap.replaceChildren(el('div', { class: 'row', style: 'margin-bottom:12px' },
       back, el('span', { class: 'pill' },
         i.external ? `${i.kind} · ${i.host}` : i.engine + ' ' + i.version),
-      el('span', { class: 'pill' }, 'db: ' + curDb)), T.node);
+      el('span', { class: 'pill' }, 'db: ' + curDb),
+      cloneBtn ? el('span', { class: 'sp' }) : '', cloneBtn || ''), T.node);
 
 
     /* Tabel */

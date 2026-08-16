@@ -50,6 +50,11 @@ services:
       # /etc/server-alerts.conf — set these in a sibling .env file.
       TG_TOKEN: ${TG_TOKEN:-}
       TG_CHAT: ${TG_CHAT:-}
+      # OAuth client buat fitur "Connect Google Drive" (Vault & Backups) —
+      # dibuat sendiri lewat Google Cloud Console (bukan bawaan rclone),
+      # supaya punya jatah API sendiri. Simpan di .env, jangan commit.
+      GDRIVE_CLIENT_ID: ${GDRIVE_CLIENT_ID:-}
+      GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
     pid: host              # needed for the host terminal and power controls
     privileged: true       # needed for nsenter into the host namespace
     networks: [apps]

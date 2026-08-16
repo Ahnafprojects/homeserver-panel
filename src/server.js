@@ -217,6 +217,31 @@ setInterval(() => {
   fs.writeFile(HOURLY_FILE, JSON.stringify(hourlyHistory.slice(-HOURLY_MAX))).catch(() => {});
 }, 60000);
 
+// Bersihin build cache docker otomatis tiap minggu — layer "RUN npm ci"
+// dkk numpuk tiap kali stack di-rebuild, gampang jadi puluhan GB di server
+// yang sering deploy ulang, dan gak kelihatan sama sekali di halaman
+// Image biasa (bukan image jadi, cuma layer perantara). Timestamp
+// terakhir disimpan ke file (bukan cuma di memori) supaya restart panel
+// nggak bikin nunggu 7 hari lagi dari nol tiap kali.
+const BUILD_CACHE_PRUNE_FILE = path.join(STATE_DIR, 'last-buildcache-prune.txt');
+const WEEK_MS = 7 * 24 * 3600 * 1000;
+async function autoPruneBuildCache() {
+  let last = 0;
+  try { last = +(await fs.readFile(BUILD_CACHE_PRUNE_FILE, 'utf8')); } catch {}
+  if (Date.now() - last < WEEK_MS) return;
+  try {
+    const r = await dockerExtra.pruneBuildCache();
+    await fs.writeFile(BUILD_CACHE_PRUNE_FILE, String(Date.now()));
+    const freed = r.SpaceReclaimed || 0;
+    if (freed > 0) {
+      ev.emit('container.buildcache_cleaned',
+        `Build cache docker dibersihkan otomatis — ${(freed / 1e9).toFixed(2)} GB dibebaskan.`);
+    }
+  } catch {}
+}
+autoPruneBuildCache();
+setInterval(autoPruneBuildCache, 24 * 3600 * 1000); // dicek tiap hari, jalan tiap 7 hari sekali
+
 // ── Pemantauan layanan ──────────────────────────────────────────────────────
 const CHECKS_FILE = path.join(STATE_DIR, 'checks.json');
 let checks = [];
@@ -1921,6 +1946,7 @@ const requestHandler = async (req, res) => {
         if (b.volumes) r.volumes = await dockerExtra.pruneVolumes();
         if (b.networks) r.networks = await dockerExtra.pruneNetworks();
         if (b.containers) r.containers = await dockerExtra.pruneContainers();
+        if (b.buildCache) r.buildCache = await dockerExtra.pruneBuildCache();
         auth.audit(ses.username, 'prune', JSON.stringify(b));
         return ok(res, r);
       }

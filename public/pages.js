@@ -882,7 +882,8 @@ VIEWS.resources = () => {
     const go = el('button', { class: 'btn danger', html: ic('trash', 13) + '<span>Clean now</span>' });
     go.onclick = async () => {
       const b = { images: opts.images.checked, volumes: opts.volumes.checked,
-        networks: opts.networks.checked, containers: opts.containers.checked };
+        networks: opts.networks.checked, containers: opts.containers.checked,
+        buildCache: opts.buildCache.checked };
       if (!Object.values(b).some(Boolean)) return toast('Pilih minimal satu');
       if (!confirm('Continue cleanup?\n\nOnly unused items are removed, '
         + 'but this cannot be undone.')) return;
@@ -890,7 +891,7 @@ VIEWS.resources = () => {
       try {
         const r = await api('/prune', { method: 'POST', body: JSON.stringify(b) });
         const freed = (r.images?.SpaceReclaimed || 0) + (r.volumes?.SpaceReclaimed || 0)
-          + (r.containers?.SpaceReclaimed || 0);
+          + (r.containers?.SpaceReclaimed || 0) + (r.buildCache?.SpaceReclaimed || 0);
         toast('Selesai — freed ' + bytes(freed)); load();
       } catch (e) { toast(e.message); } finally { go.disabled = false; }
     };
@@ -910,6 +911,8 @@ VIEWS.resources = () => {
         optRow('networks', 'Empty networks', 'Network no containers attached tersambung'),
         optRow('volumes', 'Idle volumes',
           'CAREFUL: volumes hold app data. Make sure you have a backup.', false),
+        optRow('buildCache', 'Build cache',
+          'Layer sisa "docker build" (RUN npm ci, dst) — numpuk tiap rebuild, dibersihkan otomatis tiap minggu juga.'),
         el('div', { class: 'row', style: 'margin-top:12px' }, go))));
   }
 

@@ -127,6 +127,11 @@ export const dockerExtra = {
   pruneNetworks: () => request('POST', '/networks/prune'),
 
   pruneContainers: () => request('POST', '/containers/prune'),
+  // Sisa layer build docker (RUN npm ci, dst) yang numpuk tiap kali stack
+  // di-rebuild -- gampang jadi puluhan GB di server yang sering deploy
+  // ulang, dan gak kelihatan di /images biasa (bukan image jadi, cuma
+  // layer perantara). all=true = hapus semua, bukan cuma yang dangling.
+  pruneBuildCache: () => request('POST', '/build/prune?all=true'),
 
   // Terminal ke dalam container: buat sesi exec lalu ambil soket mentahnya.
   execCreate: (id, cmd) => request('POST', `/containers/${id}/exec`, {

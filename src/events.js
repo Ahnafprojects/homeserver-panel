@@ -87,6 +87,7 @@ export const CATALOG = {
 
   // ── Cadangan ──
   'backup.failed':           { c: 'backup', s: 'urgent', t: 'Scheduled backup failed' },
+  'backup.repeated_failure': { c: 'backup', s: 'urgent', t: 'Backup failed 3 times in a row' },
   'backup.storage_error':    { c: 'backup', s: 'urgent', t: 'Backup storage problem' },
   'backup.started':          { c: 'backup', s: 'info',   t: 'Backup started' },
   'backup.ok':               { c: 'backup', s: 'info',   t: 'Backup finished' },

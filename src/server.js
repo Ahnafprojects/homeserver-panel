@@ -242,6 +242,37 @@ async function autoPruneBuildCache() {
 autoPruneBuildCache();
 setInterval(autoPruneBuildCache, 24 * 3600 * 1000); // dicek tiap hari, jalan tiap 7 hari sekali
 
+// Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
+// putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
+// rusak (drive lepas, kredensial kadaluarsa, dst) dan layak jadi urgent
+// khusus, bukan cuma numpuk di antara notifikasi run harian biasa yang
+// gampang kelewat. Baca log yang sama yang dipakai overview backup di
+// Vault & Backups (ditulis /usr/local/bin/server-backup).
+const BACKUP_ALERT_FILE = path.join(STATE_DIR, 'last-backup-failure-alert.txt');
+async function checkRepeatedBackupFailure() {
+  try {
+    const raw = await fs.readFile(path.join(STATE_DIR, 'backup-history.json'), 'utf8');
+    const lines = raw.split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter(Boolean);
+    const last3 = lines.slice(-3);
+    if (last3.length !== 3 || !last3.every((l) => l.ok === false)) return;
+    // Jangan alert ulang tiap 6 jam SELAMA streak-nya masih sama persis —
+    // cuma alert lagi kalau ada kegagalan BARU yang nambah (mis. run
+    // ke-4 juga gagal), bukan tiap kali dicek selama belum ada run baru
+    // sama sekali.
+    const newestFailT = String(last3[2].t);
+    let already = '';
+    try { already = await fs.readFile(BACKUP_ALERT_FILE, 'utf8'); } catch {}
+    if (already.trim() === newestFailT) return;
+    ev.emit('backup.repeated_failure',
+      'Backup gagal 3 kali berturut-turut — cek drive HDD ter-mount atau kredensial Google Drive.',
+      { key: 'repeated' });
+    await fs.writeFile(BACKUP_ALERT_FILE, newestFailT);
+  } catch {}
+}
+setInterval(checkRepeatedBackupFailure, 6 * 3600 * 1000);
+checkRepeatedBackupFailure();
+
 // ── Pemantauan layanan ──────────────────────────────────────────────────────
 const CHECKS_FILE = path.join(STATE_DIR, 'checks.json');
 let checks = [];

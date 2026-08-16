@@ -381,6 +381,13 @@ const THUMB_CACHE = path.join(STATE_DIR, 'thumb-cache');
 // idle, sama seperti server-backup) biar panel & container lain tidak
 // ikut lemot walau lagi ada banyak thumbnail yang diproses.
 const THUMB_MAX_CONCURRENT = Math.max(1, Math.min(2, os.cpus().length - 1));
+// -limit thread di ImageMagick ternyata TIDAK cukup: decoder HEIC (libheif
+// -> libde265/HEVC) punya thread pool sendiri di luar kendali ImageMagick,
+// jadi satu proses magick masih kepantau makan 140-250% CPU walau limit
+// itu sudah dipasang. taskset -c mengunci proses (dan SEMUA thread di
+// dalamnya, dari library mana pun) cuma boleh jalan di satu core fisik ini
+// — ini yang benar-benar membatasi, bukan cuma menyarankan.
+const THUMB_CPU = String(Math.max(0, os.cpus().length - 1));
 let thumbRunning = 0;
 const thumbQueue = [];
 function thumbSlot() {
@@ -1997,13 +2004,16 @@ const server = http.createServer(async (req, res) => {
           // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
           // perbesar file yang sudah lebih kecil dari ukuran diminta.
           // nice+ionice idle: proses berat ini tidak boleh rebutan CPU/disk
-          // sama panel sendiri atau container lain. -limit thread 1: TANPA
-          // ini satu proses magick sendiri bisa pakai >200% CPU (ImageMagick
-          // multi-thread internal lewat OpenMP) — jadi cuma batasi JUMLAH
-          // proses (thumbSlot) tidak cukup, 2 proses x 2-3 thread tiap satu
-          // tetap bisa gerus semua 4 thread laptop ini.
-          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'magick', '-limit', 'thread', '1',
-            `${f}[0]`, '-auto-orient', '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile],
+          // sama panel sendiri atau container lain. taskset -c: kunci ke SATU
+          // core fisik (lihat THUMB_CPU) — -limit thread 1 saja tidak cukup
+          // karena decoder HEIC punya thread pool sendiri di luar kendali
+          // ImageMagick. Dua-duanya dipasang: taskset jadi jaring pengaman
+          // keras (total CPU thumbnail tidak pernah lebih dari 1 core, apa
+          // pun library yang dipakai), -limit thread 1 mengurangi kerja
+          // sia-sia ImageMagick sendiri buat spawn banyak thread di 1 core itu.
+          await execFileP('nice', ['-n', '15', 'ionice', '-c3', 'taskset', '-c', THUMB_CPU,
+            'magick', '-limit', 'thread', '1', `${f}[0]`, '-auto-orient',
+            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile],
             { timeout: 30000 });
           return await serve();
         } catch (e) {

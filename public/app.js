@@ -736,6 +736,11 @@ VIEWS.files = () => {
   let cwd = '';
   let curRoot = 'data';
   let view = localStorage.getItem('files.view') === 'list' ? 'list' : 'grid';
+  // Thumbnail (foto/video asli, bukan ikon generik) MATI secara default —
+  // server yang generate-nya (ImageMagick/ffmpeg) lumayan berat kalau
+  // sekaligus banyak, jadi biar laptop tidak keberatan tiap buka folder,
+  // user yang nyalain manual pas memang mau lihat isinya.
+  let showThumbs = localStorage.getItem('files.thumbs') === '1';
   // Multi-select: selNames = item yang dicentang, selAnchor = klik terakhir
   // (titik awal buat Shift+klik pilih rentang), lastItems = daftar item yang
   // lagi ditampilkan urut tampilan (dipakai buat hitung rentang & buat Ctrl+A).
@@ -754,6 +759,16 @@ VIEWS.files = () => {
   const btnGrid = el('button', { class: 'ib', title: 'Tampilan ikon', html: ic('grid', 15) });
   const btnList = el('button', { class: 'ib', title: 'Tampilan daftar', html: ic('listv', 15) });
   const viewToggle = el('div', { class: 'row', style: 'gap:2px' }, btnGrid, btnList);
+  const btnThumbs = el('button', { class: 'tg',
+    title: 'Nyalakan buat lihat foto/video asli sebagai ikon — mati = ikon polos, lebih ringan' },
+    'Thumbnail');
+  btnThumbs.onclick = () => {
+    showThumbs = !showThumbs;
+    localStorage.setItem('files.thumbs', showThumbs ? '1' : '0');
+    paintThumbsBtn(); renderList(lastItems);
+  };
+  function paintThumbsBtn() { btnThumbs.classList.toggle('on', showThumbs); }
+  paintThumbsBtn();
   const search = searchBox('Cari nama file…', v => { qFilter = v; load(); });
   const tree = el('div', { style: 'width:200px;flex:0 0 200px;overflow:auto;'
     + 'border-right:1px solid var(--line);padding:6px 4px' });
@@ -779,7 +794,7 @@ VIEWS.files = () => {
 
   mount(el('div', { style: 'display:flex;flex-direction:column;height:100%;padding:14px 16px' },
     el('div', { class: 'row', style: 'margin-bottom:10px;gap:10px;flex-wrap:wrap;flex:0 0 auto' },
-      rootSel, crumb, el('span', { class: 'sp' }), search, hostWarn, viewToggle),
+      rootSel, crumb, el('span', { class: 'sp' }), search, hostWarn, btnThumbs, viewToggle),
     selBar,
     el('div', { class: 'card', style: 'display:flex;align-items:stretch;flex:1;min-height:0;overflow:hidden' },
       tree, wrap)), { full: true });
@@ -1139,7 +1154,7 @@ VIEWS.files = () => {
       html: ic(it.dir ? 'fold' : 'file', iconPx, 1.2) });
   }
   function iconOrThumb(it, full, px, iconPx) {
-    if (it.dir || !THUMB_EXT.test(it.name)) return iconBox(it, px, iconPx);
+    if (!showThumbs || it.dir || !THUMB_EXT.test(it.name)) return iconBox(it, px, iconPx);
     const img = el('img', {
       src: `/api/files/thumb?${q()}&path=${encodeURIComponent(full)}&size=${px * 2}`,
       loading: 'lazy', alt: '',

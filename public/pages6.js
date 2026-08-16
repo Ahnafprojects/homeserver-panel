@@ -656,6 +656,11 @@ VIEWS.editor = () => {
     sock.onclose = () => term.write('\r\n\x1b[90m— session ended —\x1b[0m\r\n');
     term.onData(d => sock.readyState === 1 && sock.send(d));
     term.onResize(({ rows, cols }) => sock.readyState === 1 && sock.send(`\x00resize:${rows},${cols}`));
+    // fit() yang jalan sebelum socket ini kebuka ngirim resize duluan lalu
+    // kebuang diam-diam. Kirim ukuran aktual begitu socket resmi kebuka.
+    sock.onopen = () => {
+      try { fitAddon.fit(); sock.send(`\x00resize:${term.rows},${term.cols}`); } catch {}
+    };
     termSessions.push({ id, term, sock, fitAddon, box });
     timers.push({ close: () => { sock?.close(); term?.dispose(); } });
     setActiveTerm(id);

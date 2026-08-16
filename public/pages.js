@@ -36,7 +36,7 @@ VIEWS.stacks = () => {
     // di drawer yang sekarang sudah lebih lebar (lihat .drawer.wide), dan
     // TUI kayak Claude Code butuh cukup kolom biar ketikan/layar-nya
     // kegambar bener, bukan cuma nyempil di kotak kecil.
-    const fontSizeFor = () => innerWidth < 560 ? 12.5 : innerWidth < 820 ? 13.5 : 15;
+    const fontSizeFor = () => innerWidth < 560 ? 11 : innerWidth < 820 ? 12 : 13;
     let curFontSize = fontSizeFor();
     const term = new Terminal({ fontSize: curFontSize, fontFamily: 'ui-monospace,Menlo,monospace',
       cursorBlink: true, scrollback: 3000,
@@ -52,6 +52,18 @@ VIEWS.stacks = () => {
     sock.onclose = () => term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
     term.onData(d => sock.readyState === 1 && sock.send(d));
     term.onResize(({ rows, cols }) => sock.readyState === 1 && sock.send(`\x00resize:${rows},${cols}`));
+    // Balapan yang bikin ketikan tidak kegambar: fit() pertama (dipicu box
+    // yang baru kelihatan) hampir selalu terjadi SEBELUM WebSocket-nya
+    // selesai connect, jadi pesan resize itu diam-diam kebuang (cek di atas
+    // gagal) dan PTY di server nyangkut di ukuran default — TUI kayak
+    // Claude Code lalu gambar berdasar ukuran yang salah itu. Begitu socket
+    // resmi kebuka, kirim ukuran yang BENERAN aktual sekarang juga —
+    // tidak nunggu onResize nge-fire lagi (itu cuma jalan kalau ukurannya
+    // BERUBAH dari sebelumnya, yang belum tentu kejadian kalau box-nya
+    // sudah kepas dari fit() pertama tadi).
+    sock.onopen = () => {
+      try { fitAddon.fit(); sock.send(`\x00resize:${term.rows},${term.cols}`); } catch {}
+    };
     const ro = new ResizeObserver(() => {
       const fs = fontSizeFor();
       if (fs !== curFontSize) { curFontSize = fs; term.options.fontSize = fs; }
@@ -568,6 +580,14 @@ VIEWS.terminal = () => {
     s.ws.binaryType = 'arraybuffer';
     s.ws.onmessage = e => s.term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
     s.ws.onclose = () => s.term.write('\r\n\x1b[90m— sesi berakhir —\x1b[0m\r\n');
+    // fit() yang jalan sebelum WS ini kebuka (biasa terjadi pas tab baru
+    // dibikin/dipilih) ngirim resize duluan lalu kebuang diam-diam (socket
+    // belum readyState 1). Kirim ukuran yang aktual sekarang begitu socket
+    // resmi kebuka, jangan cuma andalkan onResize (yang cuma jalan kalau
+    // ukurannya berubah lagi setelah itu).
+    s.ws.onopen = () => {
+      try { s.fit.fit(); s.ws.send(`\x00resize:${s.term.rows},${s.term.cols}`); } catch {}
+    };
   }
 
   function addSession(target = '') {

@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage } from './docker.js';
 import * as auth from './auth.js';
@@ -359,6 +362,15 @@ const MIME = { '.html':'text/html','.css':'text/css','.js':'text/javascript',
   '.mp3':'audio/mpeg','.wav':'audio/wav','.ogg':'audio/ogg','.m4a':'audio/mp4',
   '.flac':'audio/flac','.aac':'audio/aac' };
 const mimeOf = (f) => MIME[path.extname(f).toLowerCase()] || 'application/octet-stream';
+
+// Thumbnail Files: ImageMagick (+ imagemagick-heic/-jpeg di Dockerfile) bisa
+// decode HEIC/HEIF (foto default iPhone) yang TIDAK bisa dibuka browser
+// mana pun di Linux (Chrome/Firefox tidak punya codec-nya sama sekali,
+// beda dari Safari/iOS) — jadi ini satu-satunya cara nampilin isi foto
+// aslinya, bukan cuma ikon generik atau kotak putih kosong.
+const execFileP = promisify(execFile);
+const THUMB_EXT = /\.(jpe?g|png|gif|webp|bmp|tiff?|heic|heif|avif)$/i;
+const THUMB_CACHE = path.join(STATE_DIR, 'thumb-cache');
 
 // ── Basis data ──────────────────────────────────────────────────────────────
 const pools = new Map();
@@ -1937,6 +1949,33 @@ const server = http.createServer(async (req, res) => {
         }
         res.writeHead(200, { 'Content-Type': mimeOf(f), 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
         return fsSync.createReadStream(f).pipe(res);
+      }
+      if (p === '/api/files/thumb') {
+        const f = safePath(q.get('path'), q.get('root'));
+        if (!THUMB_EXT.test(f)) return fail(res, 'Format tidak didukung buat thumbnail', 415);
+        const st = await fs.stat(f);
+        const size = Math.min(Math.max(+q.get('size') || 200, 40), 1600);
+        const key = crypto.createHash('sha1')
+          .update(`${f}|${st.mtimeMs}|${st.size}|${size}`).digest('hex');
+        const cacheFile = path.join(THUMB_CACHE, `${key}.jpg`);
+        const serve = async () => {
+          const cst = await fs.stat(cacheFile);
+          res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': cst.size,
+            'Cache-Control': 'public, max-age=604800' });
+          return fsSync.createReadStream(cacheFile).pipe(res);
+        };
+        try { return await serve(); } catch {}
+        try {
+          await fs.mkdir(THUMB_CACHE, { recursive: true });
+          // [0]: ambil frame/halaman pertama saja (HEIC burst, GIF animasi,
+          // PDF-alike). -thumbnail ...> : cuma perkecil, jangan pernah
+          // perbesar file yang sudah lebih kecil dari ukuran diminta.
+          await execFileP('magick', [`${f}[0]`, '-auto-orient',
+            '-thumbnail', `${size}x${size}>`, '-quality', '82', cacheFile], { timeout: 20000 });
+          return await serve();
+        } catch (e) {
+          return fail(res, 'Gagal membuat thumbnail', 500);
+        }
       }
       if (p === '/api/files/upload' && req.method === 'POST') {
         const dest = safePath(path.posix.join(q.get('path') || '', q.get('name') || 'file'), q.get('root'));

@@ -809,21 +809,32 @@ VIEWS.files = () => {
   // folder isi banyak kelihatan kayak macet/hang padahal jalan.
   const upx = el('div', { class: 'upx', style: 'display:none' });
   document.body.append(upx);
-  let upxN = { done: 0, total: 0, verb: 'Mengunggah' };
-  function upxPaint(name, frac) {
+  // doneBytes/totalBytes = progres keseluruhan batch dalam byte (dipakai
+  // upload, di mana ukuran tiap file diketahui dari awal). doneCount/
+  // totalCount dipakai buat label "N/total" dan sebagai fallback persen
+  // kalau totalBytes 0 (dipakai hapus massal, yang tidak punya konsep byte).
+  let upxN = { doneBytes: 0, totalBytes: 0, doneCount: 0, totalCount: 0, verb: 'Mengunggah' };
+  function upxPaint(name, curBytes = 0) {
+    const frac = upxN.totalBytes > 0
+      ? (upxN.doneBytes + curBytes) / upxN.totalBytes
+      : (upxN.totalCount ? upxN.doneCount / upxN.totalCount : 0);
     upx.replaceChildren(
-      el('div', { class: 'upx-row' },
-        el('span', {}, `${upxN.verb} ${Math.min(upxN.done + 1, upxN.total)}/${upxN.total}`),
-        el('span', {}, Math.round(frac * 100) + '%')),
-      el('div', { class: 'upx-name' }, name),
-      el('div', { class: 'upx-bar' }, el('i', { style: `width:${Math.round(frac * 100)}%` })));
+      el('div', { class: 'upx-top' },
+        el('span', { class: 'upx-label' },
+          `${upxN.verb} ${Math.min(upxN.doneCount + 1, upxN.totalCount)}/${upxN.totalCount}`),
+        el('span', { class: 'upx-pct' }, Math.round(frac * 100) + '%')),
+      el('div', { class: 'upx-bar' }, el('i', { style: `width:${Math.round(frac * 100)}%` })),
+      el('div', { class: 'upx-sub' }, el('b', {}, name),
+        el('span', {}, upxN.totalBytes > 0
+          ? `${bytes(upxN.doneBytes + curBytes)} / ${bytes(upxN.totalBytes)}` : '')));
   }
-  function upxStart(total, verb = 'Mengunggah') {
-    upxN = { done: 0, total, verb }; upx.style.display = ''; upxPaint('Menyiapkan…', 0);
+  function upxStart(totalCount, totalBytes, verb = 'Mengunggah') {
+    upxN = { doneBytes: 0, totalBytes, doneCount: 0, totalCount, verb };
+    upx.style.display = ''; upxPaint('Menyiapkan…', 0);
   }
   function upxStop(label) {
-    upx.replaceChildren(el('div', { class: 'upx-row' },
-      el('span', {}, label || `Selesai · ${upxN.total} berkas`)));
+    upx.replaceChildren(el('div', { class: 'upx-top' },
+      el('span', { class: 'upx-label' }, label || `Selesai · ${upxN.totalCount} berkas`)));
     setTimeout(() => { upx.style.display = 'none'; }, 1200);
   }
 
@@ -833,7 +844,7 @@ VIEWS.files = () => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', url);
-      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded); };
       xhr.onload = () => (xhr.status >= 200 && xhr.status < 300)
         ? resolve() : reject(new Error('Upload gagal (' + xhr.status + ')'));
       xhr.onerror = () => reject(new Error('Upload gagal — koneksi terputus'));
@@ -843,14 +854,14 @@ VIEWS.files = () => {
   async function uploadInto(destPath, f, relName = f.name) {
     try {
       await uploadXHR(`/api/files/upload?${q()}&path=${encodeURIComponent(destPath)}&name=${encodeURIComponent(relName)}`,
-        f, (frac) => upxPaint(relName, frac));
+        f, (loaded) => upxPaint(relName, loaded));
     } catch { toast('Gagal mengunggah ' + relName); }
-    upxN.done++;
+    upxN.doneBytes += f.size; upxN.doneCount++;
   }
   async function uploadAll(destPath, files) {
-    upxStart(files.length);
+    upxStart(files.length, files.reduce((s, [f]) => s + f.size, 0));
     for (const [f, rel] of files) await uploadInto(destPath, f, rel);
-    upxStop(); refreshTree(); load();
+    upxStop(`Selesai · ${files.length} berkas · ${bytes(upxN.doneBytes)}`); refreshTree(); load();
   }
 
   async function deleteSelected() {
@@ -858,15 +869,15 @@ VIEWS.files = () => {
     if (!names.length) return;
     if (!confirm(`Hapus ${names.length} item terpilih? Isi folder ikut terhapus. `
       + 'Tindakan ini tidak bisa dibatalkan.')) return;
-    upxStart(names.length, 'Menghapus');
+    upxStart(names.length, 0, 'Menghapus');
     let failed = 0;
     for (const name of names) {
-      upxPaint(name, 0.5);
+      upxPaint(name);
       try {
         await api('/files/delete', { method: 'POST',
           body: JSON.stringify({ path: (cwd ? cwd + '/' : '') + name, root: curRoot }) });
       } catch { failed++; }
-      upxN.done++;
+      upxN.doneCount++;
     }
     upxStop(failed ? `Selesai, ${failed} gagal dihapus` : `Selesai · ${names.length} item dihapus`);
     selNames.clear(); selAnchor = null; paintSel();
@@ -915,9 +926,17 @@ VIEWS.files = () => {
   // Firefox/Chrome di Linux tidak punya decoder-nya, beda dari iPhone/Safari)
   // → tawarkan unduh saja daripada nampilin sampah biner.
   const IMG_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
+  // Buat thumbnail grid/list — svg/ico sengaja tidak dimasukkan (vektor,
+  // sudah kecil & tajam apa adanya, tidak perlu di-convert).
+  const THUMB_EXT = /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif)$/i;
+  // HEIC/HEIF (default kamera iPhone) tidak bisa didekode browser mana pun
+  // di Linux — bukan cuma kotak file putih kosong lagi, sekarang di-convert
+  // ke JPEG di server (ImageMagick + libheif, lihat /api/files/thumb) baik
+  // buat thumbnail grid maupun pratinjau penuh di sini.
+  const SERVER_IMG_EXT = /\.(heic|heif)$/i;
   const VIDEO_EXT = /\.(mp4|webm|ogv|mov|m4v|mkv)$/i;
   const AUDIO_EXT = /\.(mp3|wav|ogg|m4a|flac|aac)$/i;
-  const NO_PREVIEW_EXT = /\.(heic|heif|psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
+  const NO_PREVIEW_EXT = /\.(psd|ai|eps|raw|cr2|nef|dng|arw|zip|rar|7z|tar|gz|bz2|xz|exe|dll|so|bin|iso|apk|dmg)$/i;
   async function open(it) {
     const full = (cwd ? cwd + '/' : '') + it.name;
     if (it.dir) { cwd = full; return load(); }
@@ -925,6 +944,11 @@ VIEWS.files = () => {
     const dlUrl = `/api/files/download?${q()}&path=${encodeURIComponent(full)}`;
     if (IMG_EXT.test(it.name)) {
       return openDrawer(it.name, el('img', { src: rawUrl, style: 'max-width:100%;border-radius:8px' }));
+    }
+    if (SERVER_IMG_EXT.test(it.name)) {
+      return openDrawer(it.name, el('img', {
+        src: `/api/files/thumb?${q()}&path=${encodeURIComponent(full)}&size=1600`,
+        style: 'max-width:100%;border-radius:8px' }));
     }
     if (VIDEO_EXT.test(it.name)) {
       return openDrawer(it.name, el('video', { src: rawUrl, controls: '', autoplay: 'false',
@@ -1102,6 +1126,27 @@ VIEWS.files = () => {
   wrap.ondragleave = () => { wrap.style.background = ''; };
   wrap.ondrop = (e) => { wrap.style.background = ''; handleDrop(e, cwd); };
 
+  // Thumbnail beneran (lewat /api/files/thumb, lihat server.js) buat file
+  // gambar, bukan cuma ikon generik "file" yang sama buat semua jenis
+  // berkas — itu yang bikin foto kelihatan kayak kotak putih kosong
+  // sebelumnya. Turun ke ikon generik kalau thumbnail-nya gagal dimuat
+  // (mis. format aneh yang lolos regex tapi gagal di-convert).
+  function iconBox(it, px, iconPx) {
+    return el('div', { style: `width:${px}px;height:${px}px;flex:0 0 ${px}px;display:flex;`
+      + `align-items:center;justify-content:center;color:${it.dir ? 'var(--acc)' : 'var(--tx-3)'}`,
+      html: ic(it.dir ? 'fold' : 'file', iconPx, 1.2) });
+  }
+  function iconOrThumb(it, full, px, iconPx) {
+    if (it.dir || !THUMB_EXT.test(it.name)) return iconBox(it, px, iconPx);
+    const img = el('img', {
+      src: `/api/files/thumb?${q()}&path=${encodeURIComponent(full)}&size=${px * 2}`,
+      loading: 'lazy', alt: '',
+      style: `width:${px}px;height:${px}px;flex:0 0 ${px}px;object-fit:cover;`
+        + 'border-radius:6px;display:block' });
+    img.onerror = () => img.replaceWith(iconBox(it, px, iconPx));
+    return img;
+  }
+
   function itemCell(it, full) {
     const cell = el('div', { title: it.name, draggable: 'true',
       style: view === 'grid'
@@ -1114,8 +1159,7 @@ VIEWS.files = () => {
     cell.onmouseleave = () => { if (!selNames.has(it.name)) cell.style.background = ''; };
     if (view === 'grid') {
       cell.append(
-        el('div', { style: 'height:44px;display:flex;align-items:center;justify-content:center;'
-          + `color:${it.dir ? 'var(--acc)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 40, 1.2) }),
+        iconOrThumb(it, full, 44, 40),
         el('div', { style: 'font-size:11px;margin-top:6px;line-height:1.3;word-break:break-word;'
           + 'display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;'
           + 'max-height:29px;width:100%' }, it.name),
@@ -1123,8 +1167,7 @@ VIEWS.files = () => {
           it.dir ? '' : bytes(it.size)));
     } else {
       cell.append(
-        el('div', { style: 'flex:0 0 20px;display:flex;align-items:center;justify-content:center;'
-          + `color:${it.dir ? 'var(--acc)' : 'var(--tx-3)'}`, html: ic(it.dir ? 'fold' : 'file', 17, 1.4) }),
+        iconOrThumb(it, full, 20, 17),
         el('div', { style: 'flex:1;min-width:0;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;'
           + 'white-space:nowrap' }, it.name),
         el('div', { style: 'flex:0 0 70px;font-size:11px;color:var(--tx-3);text-align:right' },

@@ -1,26 +1,33 @@
 FROM node:20-alpine
 WORKDIR /app
 
-# docker-cli + compose  -> deploy stack
-# git                   -> clone/pull/checkout dari web
-# util-linux (nsenter)  -> terminal host & perintah daya
-RUN apk add --no-cache docker-cli docker-cli-compose git util-linux openssh-client ca-certificates \
-    postgresql17-client mariadb-client
-
+# npm install DULUAN, sebelum daftar paket apk di bawah — node-pty di
+# dalamnya butuh kompilasi native yang lambat (unduh header Node.js dari
+# unofficial-builds.nodejs.org, sering pelan di koneksi rumahan) dan
+# TIDAK BOLEH ke-invalidate cache-nya cuma gara-gara nambah/ganti satu
+# paket apk biasa (imagemagick, dst) di bawah — dulu satu baris di situ
+# ke-reorder dan bikin node-pty kompilasi ulang dari nol tiap deploy kecil.
 COPY package.json ./
-# node-pty butuh kompilasi native (ioctl TIOCSWINSZ buat resize PTY terminal
-# host beneran) — toolchain-nya cuma dipakai sekali di sini lalu dibuang,
-# tidak nambah ukuran image akhir.
-# Unduhan header Node.js buat kompilasinya (ke unofficial-builds.nodejs.org,
-# khusus musl/Alpine) kadang lambat di koneksi rumahan dan kena timeout
-# default node-gyp (~30 detik) sebelum sempat selesai — naikkan batas waktu
-# & jumlah percobaan ulang, plus retry seluruh langkah kalau tetap gagal.
 RUN apk add --no-cache --virtual .build-deps python3 make g++ \
     && npm config set fetch-timeout 300000 fetch-retries 5 fetch-retry-maxtimeout 120000 \
     && ( npm install --omit=dev --no-audit --no-fund \
       || (sleep 5  && npm install --omit=dev --no-audit --no-fund) \
       || (sleep 20 && npm install --omit=dev --no-audit --no-fund) ) \
     && apk del .build-deps
+
+# docker-cli + compose      -> deploy stack
+# git                       -> clone/pull/checkout dari web
+# util-linux (nsenter)      -> terminal host & perintah daya
+# imagemagick(-heic/-jpeg)  -> thumbnail Files, termasuk HEIC (foto iPhone) —
+#                              paket biner jadi, tidak perlu kompilasi apa pun.
+#                              imagemagick-jpeg WAJIB ada terpisah — paket
+#                              dasar imagemagick Alpine TIDAK linked ke
+#                              libjpeg sama sekali (cuma PNG/GIF), tanpa ini
+#                              semua thumbnail "jpg" yang dihasilkan
+#                              sebenarnya bukan JPEG asli.
+RUN apk add --no-cache docker-cli docker-cli-compose git util-linux openssh-client ca-certificates \
+    postgresql17-client mariadb-client imagemagick imagemagick-heic imagemagick-jpeg
+
 COPY src ./src
 COPY public ./public
 ENV NODE_ENV=production PORT=8080

@@ -955,7 +955,11 @@ const requestHandler = async (req, res) => {
           }
         }
         auth.noteOk(ip);
-        const known = auth.listSessions().some(x => x.ip === ip);
+        // IP dikenal dicek dari daftar PERSISTEN (60 hari), bukan cuma sesi
+        // yang lagi aktif detik ini juga -- lihat catatan di auth.js soal
+        // kenapa cara lama bikin false alarm "device baru" berkali-kali sehari.
+        const known = auth.isKnownIp(u.username, ip);
+        auth.rememberIp(u.username, ip);
         const tok = auth.newSession(u, ip);
         auth.audit(u.username, 'login', ip);
         ev.emit(known ? 'sec.login_ok' : 'sec.new_device',

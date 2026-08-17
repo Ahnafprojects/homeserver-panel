@@ -230,6 +230,32 @@ setInterval(() => {
   for (const [t, s] of sessions) if (now - s.seen > SESSION_TTL) sessions.delete(t);
 }, 600000);
 
+/* IP "dikenal" per user -- TERPISAH dari sesi aktif (yang cuma bertahan 12
+   jam), disimpan sampai 60 hari. Awalnya "device baru" dicek cuma dari
+   listSessions() (sesi yang LAGI aktif detik itu juga) -- begitu sesi
+   sebelumnya kedaluwarsa/dihapus (kejadian normal, wajar tiap 12 jam),
+   login berikutnya dari jaringan/IP yang SAMA PERSIS kelihatan "baru"
+   lagi, walau itu tetap orang & device yang sama. Kebukti nyata: 120
+   kejadian "sign-in device baru" cuma dalam sehari, kadang 4-7x/jam --
+   itu 99% false alarm, bikin urgent alert (Telegram/push) kena redam
+   sistem anti-spam duluan sebelum kejadian yang beneran baru sempat
+   tembus. */
+const KNOWN_IPS_FILE = path.join(STATE, 'known-ips.json');
+const KNOWN_IP_TTL = 60 * 24 * 3600 * 1000;
+let knownIps = {}; // { username: { ip: lastSeenMs } }
+try { knownIps = JSON.parse(fs.readFileSync(KNOWN_IPS_FILE, 'utf8')); } catch {}
+const saveKnownIps = () => { try { fs.writeFileSync(KNOWN_IPS_FILE, JSON.stringify(knownIps)); } catch {} };
+
+export function isKnownIp(username, ip) {
+  const rec = knownIps[username]?.[ip];
+  return !!rec && Date.now() - rec < KNOWN_IP_TTL;
+}
+export function rememberIp(username, ip) {
+  if (!knownIps[username]) knownIps[username] = {};
+  knownIps[username][ip] = Date.now();
+  saveKnownIps();
+}
+
 /* ── Pembatasan percobaan masuk ────────────────────────────────────────── */
 const attempts = new Map();
 const MAX_TRY = 5, WINDOW = 10 * 60 * 1000, BAN = 15 * 60 * 1000;

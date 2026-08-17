@@ -1091,6 +1091,44 @@ VIEWS.settings = () => {
     }
     paintPush();
 
+    /* Notifikasi Email -- jalan bareng Telegram & Push buat kejadian
+       'urgent'. Konfigurasinya lewat SMTP, disimpan di vault. */
+    const emailArea = el('div', { class: 'card' }, el('div', { class: 'card-b' }, 'Memuat...'));
+    async function paintEmail() {
+      let cfg;
+      try { cfg = await api('/email/config'); } catch { cfg = { configured: false }; }
+      const h = el('input', { placeholder: 'smtp.gmail.com', value: cfg.host || '' });
+      const po = el('input', { placeholder: '587', value: cfg.port || '587', style: 'max-width:90px' });
+      const u = el('input', { placeholder: 'Email pengirim', value: cfg.user || '' });
+      const pass = el('input', { placeholder: cfg.configured ? '•••••• (biarkan kosong kalau tidak ganti)' : 'App password / password SMTP', type: 'password' });
+      const to = el('input', { placeholder: 'Kirim notifikasi ke', value: cfg.to || '' });
+      const save = el('button', { class: 'btn pri' }, 'Simpan');
+      save.onclick = async () => {
+        if (!h.value.trim() || !u.value.trim() || !to.value.trim()) return toast('Host, pengirim, dan tujuan wajib diisi');
+        save.disabled = true;
+        try {
+          await api('/email/config', { method: 'POST', body: JSON.stringify({
+            host: h.value.trim(), port: po.value.trim(), user: u.value.trim(),
+            pass: pass.value, from: u.value.trim(), to: to.value.trim() }) });
+          toast('Konfigurasi email disimpan'); paintEmail();
+        } catch (e) { toast(e.message); } finally { save.disabled = false; }
+      };
+      const test = el('button', { class: 'btn' }, 'Kirim tes');
+      test.onclick = async () => {
+        test.disabled = true;
+        try { await api('/email/test', { method: 'POST' }); toast('Email tes terkirim — cek inbox'); }
+        catch (e) { toast(e.message); } finally { test.disabled = false; }
+      };
+      emailArea.replaceChildren(el('div', { class: 'card-b' },
+        el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+          cfg.configured ? 'Email tersambung.' : 'Belum dikonfigurasi — isi SMTP di bawah.'),
+        el('div', { class: 'row', style: 'margin-bottom:8px' }, h, po),
+        el('div', { class: 'row', style: 'margin-bottom:8px' }, u, pass),
+        el('div', { class: 'row', style: 'margin-bottom:10px' }, to),
+        el('div', { class: 'row' }, save, cfg.configured ? test : '')));
+    }
+    paintEmail();
+
     const newTokBtn = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Token baru</span>' });
     newTokBtn.onclick = () => {
       const label = el('input', { placeholder: 'mis. "CI deploy script"' });
@@ -1392,6 +1430,7 @@ VIEWS.settings = () => {
     wrap.replaceChildren(
       el('div', { class: 'sec' }, 'Two-factor authentication'), twoFA,
       el('div', { class: 'sec' }, 'Push notification'), pushArea,
+      el('div', { class: 'sec' }, 'Notifikasi Email'), emailArea,
       el('div', { class: 'sec' }, 'API tokens'), tokensSection,
       ...(sshCard ? [el('div', { class: 'sec' }, 'Akses SSH dari luar'), sshCard] : []),
       el('div', { class: 'sec' }, `Users (${users.users.length})`),

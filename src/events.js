@@ -130,6 +130,8 @@ let sendTelegram = null;
 export const setTelegramSender = (fn) => { sendTelegram = fn; };
 let sendPush = null;
 export const setPushSender = (fn) => { sendPush = fn; };
+let sendEmail = null;
+export const setEmailSender = (fn) => { sendEmail = fn; };
 
 /* Pesan kejadian ditampilkan sebagai HTML agar <b> dan <code> terbaca rapi.
    Karena sebagian isinya berasal dari luar (nama container, header IP),
@@ -161,6 +163,7 @@ export function emit(type, message = '', meta = {}) {
       lastSent.set(key, Date.now());
       sendTelegram(def.t, message);
       sendPush?.(def.t, message.replace(/<[^>]*>/g, ''));
+      sendEmail?.(def.t, message);
     }
   }
   return ev;

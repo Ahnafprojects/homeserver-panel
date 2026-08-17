@@ -14,6 +14,7 @@ import * as registryCheck from './registryCheck.js';
 import * as apiTokens from './apiTokens.js';
 import * as webpush from './webpush.js';
 import * as vulnScan from './vulnScan.js';
+import * as mailer from './mailer.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -101,6 +102,7 @@ async function notify(title, body) {
 
 ev.setTelegramSender((t, m) => notify(t, m));
 ev.setPushSender((t, m) => webpush.sendToAll(t, m).catch(() => {}));
+ev.setEmailSender((t, m) => mailer.send(t, m).catch(() => {}));
 
 // ── Riwayat metrik ──────────────────────────────────────────────────────────
 // Disimpan di memori (cincin) lalu ditulis ke disk berkala, supaya grafik
@@ -832,6 +834,23 @@ const requestHandler = async (req, res) => {
         return ok(res);
       }
 
+      // Konfigurasi email (SMTP) -- alternatif/pelengkap Telegram buat
+      // kejadian 'urgent'. Password SMTP tidak pernah dikirim balik ke
+      // browser (cuma ditulis, gak dibaca), sama seperti pola secret lain.
+      if (p === '/api/email/config' && req.method === 'GET') {
+        return ok(res, { configured: mailer.configured(), ...mailer.settings() });
+      }
+      if (p === '/api/email/config' && req.method === 'POST') {
+        const b = await readJson(req);
+        mailer.setConfig(b);
+        auth.audit(ses.username, 'email-config', 'diperbarui');
+        return ok(res);
+      }
+      if (p === '/api/email/test' && req.method === 'POST') {
+        try { await mailer.sendTest(); return ok(res); }
+        catch (e) { return fail(res, e.message, 400); }
+      }
+
       // Wizard setup pertama kali -- status tiap langkah opsional, biar
       // wizard di web tahu langkah mana yang sudah/belum dikerjakan
       // pengguna template ini. Bukan syarat wajib, cuma penanda.
@@ -840,6 +859,7 @@ const requestHandler = async (req, res) => {
         try { dismissed = (await fs.readFile(path.join(STATE_DIR, 'wizard-dismissed.txt'), 'utf8')).trim() === '1'; } catch {}
         return ok(res, {
           telegram: !!(tgToken() && tgChat()),
+          email: mailer.configured(),
           gdrive: gdrive.configured(),
           stacks: (await stacks.listStacks().catch(() => [])).length > 0,
           dismissed,

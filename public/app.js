@@ -1815,6 +1815,24 @@ function showSetupWizard(status) {
     } catch (e) { toast(e.message); } finally { tgSave.disabled = false; }
   };
 
+  const emH = el('input', { placeholder: 'Host SMTP, mis. smtp.gmail.com' });
+  const emP = el('input', { placeholder: 'Port, mis. 587', value: '587', style: 'max-width:90px' });
+  const emU = el('input', { placeholder: 'Email pengirim (user SMTP)' });
+  const emPass = el('input', { placeholder: 'App password / password SMTP', type: 'password' });
+  const emTo = el('input', { placeholder: 'Kirim notifikasi ke email ini' });
+  const emSave = el('button', { class: 'btn pri' }, 'Simpan & tes');
+  emSave.onclick = async () => {
+    if (!emH.value.trim() || !emU.value.trim() || !emPass.value.trim() || !emTo.value.trim()) return toast('Isi semua field email dulu');
+    emSave.disabled = true;
+    try {
+      await api('/email/config', { method: 'POST', body: JSON.stringify({
+        host: emH.value.trim(), port: emP.value.trim(), user: emU.value.trim(),
+        pass: emPass.value, from: emU.value.trim(), to: emTo.value.trim() }) });
+      await api('/email/test', { method: 'POST' });
+      toast('Tersambung — cek email tesnya');
+    } catch (e) { toast(e.message); } finally { emSave.disabled = false; }
+  };
+
   const wizBody = el('div', {},
     el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:18px;line-height:1.6' },
       'Panel ini sudah bisa dipakai sekarang. Bagian di bawah opsional — lewati kapan saja, bisa diisi belakangan lewat Settings / Vault & Backups.'),
@@ -1822,6 +1840,13 @@ function showSetupWizard(status) {
       status.telegram
         ? el('div', { style: 'font-size:12px;color:var(--good)' }, 'Sudah tersambung.')
         : el('div', { class: 'row' }, tgToken, tgChat, tgSave)),
+    step('Notifikasi Email', status.email,
+      status.email
+        ? el('div', { style: 'font-size:12px;color:var(--good)' }, 'Sudah tersambung.')
+        : el('div', {},
+            el('div', { class: 'row', style: 'margin-bottom:6px' }, emH, emP),
+            el('div', { class: 'row', style: 'margin-bottom:6px' }, emU, emPass),
+            el('div', { class: 'row' }, emTo, emSave))),
     step('Cadangan ke Google Drive', status.gdrive,
       status.gdrive
         ? el('div', { style: 'font-size:12px;color:var(--good)' }, 'Sudah tersambung.')

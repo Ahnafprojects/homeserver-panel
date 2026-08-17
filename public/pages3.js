@@ -31,7 +31,7 @@ VIEWS.events = () => {
     renderList(body);
   }
 
-  const SEV = { urgent: ['bad', 'Telegram + web'], info: ['', 'web only'] };
+  const SEV = { urgent: ['bad', 'Telegram + Email + Push + web'], info: ['', 'web only'] };
 
   function renderList(body) {
     const list = data.events.filter(e =>
@@ -90,7 +90,7 @@ VIEWS.events = () => {
       const tb = el('tbody');
       items.forEach(it => {
         const sel = el('select', { style: 'max-width:150px' },
-          el('option', { value: 'urgent' }, 'Telegram + web'),
+          el('option', { value: 'urgent' }, 'Telegram + Email + Push + web'),
           el('option', { value: 'info' }, 'Web only'),
           el('option', { value: 'off' }, 'Disable'));
         sel.value = it.cur;

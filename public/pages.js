@@ -441,6 +441,35 @@ VIEWS.stacks = () => {
         }
       }
 
+      if (s.source === 'git') {
+        // Jendela jam deploy -- push webhook di luar jam ini cuma nge-pull
+        // kode (siap-siap), tidak langsung rebuild/restart. Berguna biar
+        // gak ada deploy yang ke-trigger tengah malam pas lagi gak mantau.
+        const win = await api(`/stacks/${s.name}/deploy-window`).catch(() => ({ enabled: false, startHour: 9, endHour: 21 }));
+        const enabled = el('input', { type: 'checkbox', style: 'width:auto;height:auto' });
+        enabled.checked = win.enabled;
+        const startH = el('input', { type: 'number', min: '0', max: '23', value: win.startHour, style: 'max-width:70px' });
+        const endH = el('input', { type: 'number', min: '0', max: '23', value: win.endHour, style: 'max-width:70px' });
+        const saveWin = el('button', { class: 'btn' }, 'Simpan');
+        saveWin.onclick = async () => {
+          try {
+            await api(`/stacks/${s.name}/deploy-window`, { method: 'POST', body: JSON.stringify({
+              enabled: enabled.checked, startHour: startH.value, endHour: endH.value }) });
+            toast('Jendela deploy disimpan');
+          } catch (e) { toast(e.message); }
+        };
+        body.append(el('div', { class: 'sec' }, 'Jendela jam deploy otomatis (webhook)'),
+          el('div', { class: 'card' }, el('div', { class: 'card-b' },
+            el('label', { class: 'row', style: 'cursor:pointer;font-weight:400;margin-bottom:10px' },
+              enabled, 'Batasi auto-deploy dari push webhook cuma di jam tertentu'),
+            el('div', { class: 'row', style: 'align-items:center;gap:8px' },
+              'Dari jam', startH, 'sampai', endH, '(waktu server)'),
+            el('div', { style: 'font-size:11px;color:var(--tx-3);margin-top:8px;line-height:1.6' },
+              'Push di luar jam ini kode-nya tetap ditarik (git pull), tapi rebuild/restart DITUNDA sampai jam berikutnya masuk jendela -- otomatis, tidak perlu dipicu manual.'
+              + (s.pendingDeploy ? ' ⏳ Ada deploy yang lagi ditunda buat stack ini.' : '')),
+            el('div', { class: 'row', style: 'margin-top:10px' }, saveWin))));
+      }
+
       const hookUrl = `${location.origin}/hook/${s.name}`;
       body.append(el('div', { class: 'sec' }, 'compose'),
         el('div', { class: 'card' }, el('div', { class: 'card-b mono',

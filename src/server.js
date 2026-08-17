@@ -436,6 +436,24 @@ async function autoCleanPreviews() {
 }
 setInterval(autoCleanPreviews, 24 * 3600 * 1000);
 
+// Deploy yang ditunda karena di luar jendela jam (lihat rute /hook/:token
+// di atas) -- dicek tiap 15 menit, jalan begitu jamnya masuk jendela lagi.
+async function autoDeployWindowCheck() {
+  let list = [];
+  try { list = await stacks.listStacks(); } catch { return; }
+  for (const s of list) {
+    if (!s.pendingDeploy) continue;
+    if (!stacks.inDeployWindow(s.name)) continue;
+    stacks.setPendingDeploy(s.name, false);
+    const lines = [];
+    const code = await stacks.deploy(s.name, (l) => lines.push(l)).catch(() => 1);
+    ev.emit(code === 0 ? 'deploy.success' : 'deploy.failed',
+      `Auto-deploy <code>${s.name}</code> (ditunda dari jam sebelumnya)${code === 0 ? ' berhasil.' : ` gagal (kode ${code}).`}`,
+      { key: s.name });
+  }
+}
+setInterval(autoDeployWindowCheck, 15 * 60 * 1000);
+
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
 // rusak (drive lepas, kredensial kadaluarsa, dst) dan layak jadi urgent
@@ -2258,6 +2276,15 @@ const requestHandler = async (req, res) => {
       if ((m = p.match(/^\/api\/stacks\/([^/]+)\/hook$/))) {
         return ok(res, { token: stacks.webhookToken(m[1]) });
       }
+      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/deploy-window$/))) {
+        if (req.method === 'GET') return ok(res, stacks.getDeployWindow(m[1]));
+        if (req.method === 'POST') {
+          const b = await readJson(req);
+          stacks.setDeployWindow(m[1], b);
+          auth.audit(ses.username, 'deploy-window', `${m[1]} ${JSON.stringify(b)}`);
+          return ok(res);
+        }
+      }
       if ((m = p.match(/^\/api\/stacks\/([^/]+)\/git$/))) {
         const name = m[1];
         if (req.method === 'GET') {
@@ -3083,10 +3110,23 @@ const requestHandler = async (req, res) => {
       const name = stacks.stackByHook(token);
       if (!name) return fail(res, 'Unknown token', 404);
       ev.emit('deploy.webhook', `Push terdeteksi untuk stack <code>${name}</code>.`, { key: name });
-      json(res, 202, { accepted: true, stack: name });
+      // Jendela jam deploy (opsional, per-stack) -- push di luar jam yang
+      // diizinkan cuma nge-pull kode-nya (siap-siap), TIDAK langsung
+      // rebuild/restart. autoDeployWindowCheck() (job periodik) yang
+      // nge-deploy beneran begitu masuk jendela berikutnya.
+      const allowed = stacks.inDeployWindow(name);
+      json(res, 202, { accepted: true, stack: name, deployedNow: allowed });
       (async () => {
         const lines = [];
         await stacks.gitPull(name, (l) => lines.push(l));
+        if (!allowed) {
+          stacks.setPendingDeploy(name, true);
+          const w = stacks.getDeployWindow(name);
+          ev.emit('deploy.webhook',
+            `Push <code>${name}</code> ditunda -- di luar jendela deploy (${w.startHour}:00-${w.endHour}:00). `
+            + `Kode sudah ditarik, deploy jalan otomatis begitu masuk jendela.`, { key: name + '-deferred' });
+          return;
+        }
         const code = await stacks.deploy(name, (l) => lines.push(l));
         ev.emit(code === 0 ? 'deploy.success' : 'deploy.failed',
           `Auto-deploy <code>${name}</code>${code === 0 ? ' berhasil.' : ` gagal (kode ${code}).`}`,

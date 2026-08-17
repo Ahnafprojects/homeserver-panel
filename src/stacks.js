@@ -96,7 +96,9 @@ export async function listStacks() {
     out.push({ name: d.name, running, total, source: m.source || 'compose',
       repo: m.repo || null, branch: m.branch || null,
       updated: m.updated || null, lastDeploy: m.lastDeploy || null,
-      isPreview: !!m.isPreview, previewOf: m.previewOf || null });
+      isPreview: !!m.isPreview, previewOf: m.previewOf || null,
+      deployWindow: m.deployWindow || { enabled: false, startHour: 9, endHour: 21 },
+      pendingDeploy: !!m.pendingDeploy });
   }
   return out;
 }
@@ -135,6 +137,41 @@ export async function removeStack(name) {
   await runP('docker', ['compose', 'down', '-v'], { cwd: dir });
   await fs.rm(dir, { recursive: true, force: true });
   const meta = loadMeta(); delete meta[safeName(name)]; saveMeta(meta);
+}
+
+/* Jendela jam deploy -- webhook push di luar jam ini cuma di-"pull" (kode
+   ditarik, siap-siap) tanpa langsung deploy, biar gak ada rebuild/restart
+   yang keganggu pas lagi gak dipantau (mis. tengah malam). Jam dalam
+   waktu SERVER (laptop ini), 0-23, startHour boleh > endHour buat jendela
+   yang ngelewatin tengah malam (mis. 22-6 = jam malam LEWAT boleh deploy,
+   startHour 6 endHour 22 = jam siang boleh deploy -- tergantung use case). */
+export function getDeployWindow(name) {
+  const meta = loadMeta()[safeName(name)] || {};
+  return meta.deployWindow || { enabled: false, startHour: 9, endHour: 21 };
+}
+export function setDeployWindow(name, win) {
+  const meta = loadMeta();
+  const k = safeName(name);
+  meta[k] = { ...(meta[k] || {}), deployWindow: {
+    enabled: !!win.enabled,
+    startHour: Math.max(0, Math.min(23, +win.startHour || 0)),
+    endHour: Math.max(0, Math.min(23, +win.endHour || 0)),
+  } };
+  saveMeta(meta);
+}
+export function inDeployWindow(name) {
+  const w = getDeployWindow(name);
+  if (!w.enabled) return true;
+  const h = new Date().getHours();
+  return w.startHour <= w.endHour
+    ? (h >= w.startHour && h < w.endHour)
+    : (h >= w.startHour || h < w.endHour); // ngelewatin tengah malam
+}
+export function setPendingDeploy(name, pending) {
+  const meta = loadMeta();
+  const k = safeName(name);
+  meta[k] = { ...(meta[k] || {}), pendingDeploy: pending };
+  saveMeta(meta);
 }
 
 export function markPreview(name, previewOf, branch) {

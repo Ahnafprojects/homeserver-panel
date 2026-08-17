@@ -267,3 +267,14 @@ export function readAudit(limit = 300) {
       .filter(Boolean);
   } catch { return []; }
 }
+/* Audit log ditulis TERUS-MENERUS (append), gak pernah dibersihin sendiri --
+   dibiarkan bisa numpuk selamanya. Potong entri lebih tua dari N hari. */
+export function pruneAudit(days = 90) {
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+  let lines = [];
+  try { lines = fs.readFileSync(F_AUDIT, 'utf8').trim().split('\n').filter(Boolean); } catch { return { kept: 0, dropped: 0 }; }
+  const kept = lines.filter((l) => { try { return JSON.parse(l).t >= cutoff; } catch { return false; } });
+  if (kept.length === lines.length) return { kept: kept.length, dropped: 0 };
+  try { fs.writeFileSync(F_AUDIT, kept.length ? kept.join('\n') + '\n' : ''); } catch {}
+  return { kept: kept.length, dropped: lines.length - kept.length };
+}

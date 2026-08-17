@@ -185,6 +185,17 @@ export function markRead(ids) {
   dirty = true;
 }
 export function clearAll() { events = []; dirty = true; }
+/* Selain batas JUMLAH (MAX=2000 di atas), potong juga yang lebih tua dari
+   N hari -- kejadian ramai (mis. banyak deploy sehari) bisa nutupin batas
+   jumlah dalam hitungan hari, sementara kejadian sepi bisa nyimpen entri
+   berbulan-bulan yang udah gak relevan lagi. */
+export function pruneOld(days = 30) {
+  const cutoff = Date.now() - days * 24 * 3600 * 1000;
+  const before = events.length;
+  events = events.filter((e) => e.t >= cutoff);
+  if (events.length !== before) dirty = true;
+  return { kept: events.length, dropped: before - events.length };
+}
 export function stats() {
   const byCat = {};
   for (const e of events) byCat[e.cat] = (byCat[e.cat] || 0) + 1;

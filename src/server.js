@@ -454,6 +454,22 @@ async function autoDeployWindowCheck() {
 }
 setInterval(autoDeployWindowCheck, 15 * 60 * 1000);
 
+// Audit log & notifikasi (pusat kejadian) dibiarkan numpuk gak ada
+// batesannya berdasarkan waktu -- audit.log ditulis terus tanpa pernah
+// dipotong, notifikasi cuma dibatesin JUMLAH (2000 entri, bisa kelewat
+// gara-gara hari ramai). Potong otomatis tiap hari.
+async function autoPruneAuditAndEvents() {
+  try {
+    const a = auth.pruneAudit(90);
+    const e = ev.pruneOld(30);
+    if (a.dropped > 0 || e.dropped > 0) {
+      auth.audit('system', 'auto-prune', `audit -${a.dropped} baris, notifikasi -${e.dropped} entri`);
+    }
+  } catch {}
+}
+autoPruneAuditAndEvents();
+setInterval(autoPruneAuditAndEvents, 24 * 3600 * 1000);
+
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
 // rusak (drive lepas, kredensial kadaluarsa, dst) dan layak jadi urgent

@@ -1791,6 +1791,59 @@ function authScreen(mode) {
   user.focus();
 }
 
+/* Wizard onboarding -- muncul sekali abis akun pertama dibuat, nuntun
+   admin ngisi hal-hal opsional (Telegram, Google Drive backup, deploy
+   stack pertama) supaya template ini kepake beneran tanpa baca dokumen. */
+function showSetupWizard(status) {
+  const step = (title, doneNow, body) => el('div', { style: 'margin-bottom:22px' },
+    el('div', { style: 'font-size:13px;font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px' },
+      el('span', { style: `width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:none;background:${doneNow ? 'var(--good)' : 'var(--bg-3)'};color:${doneNow ? '#fff' : 'var(--tx-3)'}` },
+        doneNow ? '✓' : ''),
+      title),
+    body);
+
+  const tgToken = el('input', { placeholder: 'Bot token dari @BotFather' });
+  const tgChat = el('input', { placeholder: 'Chat ID (bisa dari @userinfobot)' });
+  const tgSave = el('button', { class: 'btn pri' }, 'Simpan & tes');
+  tgSave.onclick = async () => {
+    if (!tgToken.value.trim() || !tgChat.value.trim()) return toast('Isi token & chat ID dulu');
+    tgSave.disabled = true;
+    try {
+      await api('/telegram/config', { method: 'POST', body: JSON.stringify({ token: tgToken.value.trim(), chat: tgChat.value.trim() }) });
+      await api('/telegram/test', { method: 'POST' });
+      toast('Tersambung — cek pesan tes di Telegram');
+    } catch (e) { toast(e.message); } finally { tgSave.disabled = false; }
+  };
+
+  const wizBody = el('div', {},
+    el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:18px;line-height:1.6' },
+      'Panel ini sudah bisa dipakai sekarang. Bagian di bawah opsional — lewati kapan saja, bisa diisi belakangan lewat Settings / Vault & Backups.'),
+    step('Notifikasi Telegram', status.telegram,
+      status.telegram
+        ? el('div', { style: 'font-size:12px;color:var(--good)' }, 'Sudah tersambung.')
+        : el('div', { class: 'row' }, tgToken, tgChat, tgSave)),
+    step('Cadangan ke Google Drive', status.gdrive,
+      status.gdrive
+        ? el('div', { style: 'font-size:12px;color:var(--good)' }, 'Sudah tersambung.')
+        : el('div', {}, el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:8px' },
+            'Setup lengkap (Client ID/Secret + hubungkan akun) ada di halaman Vault & Backups.'),
+          (() => { const b = el('button', { class: 'btn' }, 'Buka Vault & Backups'); b.onclick = () => { closeDrawer(); go('vault'); }; return b; })())),
+    step('Deploy stack pertama', status.stacks,
+      status.stacks
+        ? el('div', { style: 'font-size:12px;color:var(--good)' }, `${status.stacks ? 'Sudah ada stack berjalan.' : ''}`)
+        : el('div', {}, el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:8px' },
+            'Deploy container pertama dari docker-compose.yml atau clone dari repo Git di halaman Stacks.'),
+          (() => { const b = el('button', { class: 'btn' }, 'Buka Stacks'); b.onclick = () => { closeDrawer(); go('stacks'); }; return b; })())),
+    el('div', { class: 'row', style: 'margin-top:8px' },
+      (() => {
+        const b = el('button', { class: 'btn' }, 'Jangan tampilkan lagi');
+        b.onclick = async () => { await api('/setup/dismiss', { method: 'POST' }).catch(() => {}); closeDrawer(); };
+        return b;
+      })()));
+  openDrawer('Selamat datang — setup awal', wizBody);
+  $('#drawer').classList.add('wide');
+}
+
 api('/auth/state').then(st => {
   if (st.setup) return authScreen('setup');
   if (!st.user) return authScreen('login');
@@ -1806,6 +1859,16 @@ api('/auth/state').then(st => {
   out.onclick = async () => { await api('/auth/logout', { method: 'POST' }); location.reload(); };
   $('.side-foot').append(out);
   go(location.hash.slice(1) || 'overview');
+
+  // Wizard setup pertama kali -- cuma buat admin, cuma kalau belum ditutup
+  // dan masih ada langkah opsional yang belum dikerjakan.
+  if (st.user.role === 'superadmin' || st.user.role === 'admin') {
+    api('/setup/status').then((s) => {
+      if (s.dismissed) return;
+      if (s.telegram && s.gdrive && s.stacks) return;
+      showSetupWizard(s);
+    }).catch(() => {});
+  }
 
   // Lencana notifikasi diperbarui terus, tidak peduli pages mana yang dibuka.
   const badge = () => api('/events?n=1').then(r => {

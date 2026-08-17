@@ -46,8 +46,11 @@ const PORT = +(process.env.PORT || 8080);
 // kena LAN atau internet.
 const TUNNEL_PORT = +(process.env.TUNNEL_PORT || 8081);
 
-const TG_TOKEN = process.env.TG_TOKEN || '';
-const TG_CHAT = process.env.TG_CHAT || '';
+// Bisa diisi lewat .env ATAU lewat wizard setup di web (vault) -- vault
+// diprioritaskan supaya template ini bisa dipakai orang lain tanpa
+// nyentuh .env, sama seperti pola GDRIVE_CLIENT_ID/SECRET.
+const tgToken = () => admin.getSecret('TG_TOKEN') || process.env.TG_TOKEN || '';
+const tgChat = () => admin.getSecret('TG_CHAT') || process.env.TG_CHAT || '';
 
 // ── Utilitas ────────────────────────────────────────────────────────────────
 const json = (res, code, obj) => {
@@ -80,13 +83,14 @@ const readJson = async (req) => {
 };
 
 async function notify(title, body) {
-  if (!TG_TOKEN || !TG_CHAT) return;
+  const token = tgToken(), chat = tgChat();
+  if (!token || !chat) return;
   try {
-    await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        chat_id: TG_CHAT, parse_mode: 'HTML',
+        chat_id: chat, parse_mode: 'HTML',
         text: `<b>${title}</b>\n\n${body}`,
       }),
       signal: AbortSignal.timeout(10000),
@@ -806,6 +810,43 @@ const requestHandler = async (req, res) => {
       }
       if (p === '/api/push/subs' && req.method === 'GET') {
         return ok(res, { subs: webpush.listFor(ses.username) });
+      }
+
+      // Konfigurasi Telegram lewat web (buat wizard setup) -- token disimpan
+      // di vault terenkripsi yang sudah ada, chat_id tidak dianggap rahasia
+      // tapi disimpan di tempat sama biar konsisten.
+      if (p === '/api/telegram/config' && req.method === 'GET') {
+        return ok(res, { configured: !!(tgToken() && tgChat()), chat: tgChat() });
+      }
+      if (p === '/api/telegram/config' && req.method === 'POST') {
+        const b = await readJson(req);
+        if (b.token) admin.setSecret('TG_TOKEN', String(b.token).trim());
+        if (b.chat) admin.setSecret('TG_CHAT', String(b.chat).trim());
+        auth.audit(ses.username, 'telegram-config', 'diperbarui');
+        return ok(res);
+      }
+      if (p === '/api/telegram/test' && req.method === 'POST') {
+        if (!tgToken() || !tgChat()) return fail(res, 'Isi token & chat ID dulu', 400);
+        await notify('Tes notifikasi', 'Kalau pesan ini sampai, Telegram sudah tersambung dengan benar.');
+        return ok(res);
+      }
+
+      // Wizard setup pertama kali -- status tiap langkah opsional, biar
+      // wizard di web tahu langkah mana yang sudah/belum dikerjakan
+      // pengguna template ini. Bukan syarat wajib, cuma penanda.
+      if (p === '/api/setup/status' && req.method === 'GET') {
+        let dismissed = false;
+        try { dismissed = (await fs.readFile(path.join(STATE_DIR, 'wizard-dismissed.txt'), 'utf8')).trim() === '1'; } catch {}
+        return ok(res, {
+          telegram: !!(tgToken() && tgChat()),
+          gdrive: gdrive.configured(),
+          stacks: (await stacks.listStacks().catch(() => [])).length > 0,
+          dismissed,
+        });
+      }
+      if (p === '/api/setup/dismiss' && req.method === 'POST') {
+        await fs.writeFile(path.join(STATE_DIR, 'wizard-dismissed.txt'), '1');
+        return ok(res);
       }
 
       // Penjaga izin: tiap kelompok rute dipetakan ke satu halaman.
@@ -2958,7 +2999,7 @@ setTimeout(async () => {
 
 server.listen(PORT, () => {
   console.log(`[panel] siap di :${PORT}  data=${DATA_ROOT}  state=${STATE_DIR}`);
-  if (TG_TOKEN && TG_CHAT) notify('Panel menyala', 'Panel home server sudah aktif.');
+  if (tgToken() && tgChat()) notify('Panel menyala', 'Panel home server sudah aktif.');
 });
 tunnelServer.listen(TUNNEL_PORT, () => {
   console.log(`[panel] jalur tunnel siap di :${TUNNEL_PORT} (cuma buat cloudflared)`);

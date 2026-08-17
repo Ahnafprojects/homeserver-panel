@@ -2276,7 +2276,7 @@ const requestHandler = async (req, res) => {
       }
 
       // Aksi panjang memakai SSE supaya log build terlihat saat berjalan.
-      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout|autodeploy|preview)$/))) {
+      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout|autodeploy|preview|canary-deploy)$/))) {
         const [, name, action] = m;
         res.writeHead(200, { 'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -2333,6 +2333,24 @@ const requestHandler = async (req, res) => {
               }
             }
             return done(c);
+          }
+          // Canary deploy: image baru di-build & DICOBA di container terpisah
+          // dulu (docker compose run, gak publish port host, gak ganggu
+          // traffic live) SEBELUM stack lama disentuh -- beda dari 'deploy'
+          // biasa (yang auto-rollback REAKTIF, sesudah live) ini PROAKTIF,
+          // dicegah sebelum sempat live sama sekali. Lihat stacks.canaryDeploy().
+          if (action === 'canary-deploy') {
+            const r = await stacks.canaryDeploy(name, send);
+            auth.audit(ses.username, 'canary-deploy', `${name} code=${r.code} stage=${r.stage}`);
+            if (r.stage === 'canary' || r.stage === 'build') {
+              ev.emit('deploy.failed',
+                `Canary deploy <code>${name}</code> dibatalkan di tahap <code>${r.stage}</code> -- stack lama tidak disentuh sama sekali, traffic tidak terganggu.`,
+                { key: name });
+              return done(r.code);
+            }
+            ev.emit(r.code === 0 ? 'deploy.success' : 'deploy.failed',
+              `Stack <code>${name}</code>${r.code === 0 ? ' berhasil di-deploy (lolos canary).' : ` gagal (kode ${r.code}).`}`, { key: name });
+            return done(r.code);
           }
           if (action === 'autodeploy') {
             let port = +q.get('port');

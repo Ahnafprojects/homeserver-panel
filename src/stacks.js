@@ -236,6 +236,60 @@ export function deploy(name, onLine, { build = true } = {}) {
     e.onDone = (code) => { markDeploy(name, code === 0); resolve(code); };
   });
 }
+/* Deploy "canary": image baru di-build & DICOBA DULU di container terpisah
+   (docker compose run --rm, otomatis TIDAK publish port host punya service
+   -- jadi gak bentrok sama container utama yang masih jalan) SEBELUM
+   nyentuh container yang lagi ngelayanin traffic sama sekali. Kalau
+   canary-nya crash, deploy dibatalkan total -- stack lama tidak diapa-
+   apain. Kalau sehat, baru "docker compose up -d" beneran jalan (image
+   udah ke-build, cepat, jendela downtime-nya seminimal mungkin), lalu
+   canary-nya dibuang. Beda dari auto-rollback (item 6) yang REAKTIF
+   (ketauan gagal SESUDAH live) -- ini PROAKTIF, dicoba sebelum live sama
+   sekali. Cuma jalan buat service PERTAMA di compose file (asumsi satu
+   app per stack, pola yang dipakai autodeploy.js). */
+export async function canaryDeploy(name, onLine) {
+  const dir = dirOf(name);
+  onLine?.('$ docker compose build (stack lama tetap jalan normal selama ini)');
+  const build = await runP('docker', ['compose', 'build'], { cwd: dir });
+  build.out.split('\n').forEach((l) => l && onLine?.(l));
+  if (build.code !== 0) { onLine?.('$ build GAGAL -- stack lama tidak disentuh sama sekali'); return { code: build.code, stage: 'build' }; }
+
+  const cfg = await runP('docker', ['compose', 'config', '--format', 'json'], { cwd: dir });
+  let svcName = null;
+  try { svcName = Object.keys(JSON.parse(cfg.out).services || {})[0] || null; } catch {}
+  if (!svcName) { onLine?.('$ tidak bisa baca nama service dari compose -- lanjut deploy langsung tanpa canary'); }
+
+  const canaryName = `${name}-canary`;
+  await runP('docker', ['rm', '-f', canaryName]); // sisa canary gagal sebelumnya, kalau ada
+  if (svcName) {
+    onLine?.(`$ mencoba image baru di container terpisah (${canaryName}) dulu, belum ada traffic ke sini...`);
+    // SENGAJA tanpa --rm: kalau canary-nya crash cepat, --rm bikin containernya
+    // otomatis kehapus SEBELUM sempat di-inspect (kebukti nyata pas testing --
+    // exit code jadi kebaca kosong). Dibersihkan manual lewat 'docker rm -f'
+    // di bawah, baik yang sehat maupun yang crash.
+    const run2 = await runP('docker', ['compose', 'run', '-d', '--name', canaryName, '--no-deps', svcName],
+      { cwd: dir });
+    if (run2.code === 0) {
+      await new Promise((r) => setTimeout(r, 6000)); // waktu buat crash kalau memang bakal crash (migrasi, env salah, dst)
+      const inspect = await runP('docker', ['inspect', canaryName, '--format', '{{.State.Running}} {{.State.ExitCode}}']);
+      const [running, exitCode] = (inspect.out || '').trim().split(' ');
+      await runP('docker', ['rm', '-f', canaryName]);
+      if (running !== 'true' || (exitCode && exitCode !== '0')) {
+        onLine?.(`$ CANARY CRASH (exit ${exitCode || '?'}) -- deploy DIBATALKAN, stack lama tidak disentuh sama sekali`);
+        return { code: 1, stage: 'canary' };
+      }
+      onLine?.('$ canary sehat, lanjut ganti versi live...');
+    } else {
+      onLine?.('$ canary gagal dijalankan (bukan berarti image-nya rusak -- bisa jadi service butuh dependency lain), lanjut deploy langsung');
+      await runP('docker', ['rm', '-f', canaryName]);
+    }
+  }
+
+  onLine?.('$ docker compose up -d (image sudah ter-build, harusnya cepat)');
+  const code = await deploy(name, onLine, { build: false });
+  return { code, stage: 'live' };
+}
+
 export const stopStack = (name, onLine) => new Promise((resolve) => {
   const e = run('docker', ['compose', 'down'], { cwd: dirOf(name) });
   e.onLine = onLine; e.onDone = resolve;

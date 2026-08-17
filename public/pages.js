@@ -303,6 +303,10 @@ VIEWS.stacks = () => {
       };
       acts.append(
         mk('Deploy', 'play', () => stream(`/api/stacks/${s.name}/deploy`, 'Deploy — ' + s.name, null, s.name), 'btn pri'),
+        mk('Canary deploy', 'layers', () => {
+          if (!confirm('Canary deploy: image baru dicoba dulu di container terpisah SEBELUM stack lama disentuh. Kalau gagal, stack lama tidak diapa-apain. Butuh waktu sedikit lebih lama dari deploy biasa. Lanjut?')) return;
+          stream(`/api/stacks/${s.name}/canary-deploy`, 'Canary deploy — ' + s.name, null, s.name);
+        }),
         mk('Stop', 'stop', () => stream(`/api/stacks/${s.name}/stop`, 'Stop — ' + s.name, null, s.name)),
         mk('Edit', 'edit', () => formCompose(st)),
         mk('Delete', 'trash', async () => {

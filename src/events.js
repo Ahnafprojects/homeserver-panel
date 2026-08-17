@@ -49,6 +49,7 @@ export const CATALOG = {
   'container.buildcache_cleaned': { c: 'container', s: 'info', t: 'Build cache cleaned automatically' },
   'container.autoscale_up':  { c: 'container', s: 'urgent', t: 'Replica scaled up (RAM near limit)' },
   'container.autoscale_down':{ c: 'container', s: 'info',   t: 'Replica scaled down (idle)' },
+  'container.anomaly':       { c: 'container', s: 'info',   t: 'Unusual resource spike detected' },
 
   // ── Deploy ──
   'deploy.failed':           { c: 'deploy', s: 'urgent', t: 'Deploy failed' },

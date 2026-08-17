@@ -231,6 +231,37 @@ setInterval(async () => {
 // persis kayak database (historyStore.js). rx/tx kumulatif sejak container
 // nyala, jadi pemanggil yang ngitung selisih (sama kayak "requests").
 const containerSeries = makeSeriesStore('container-history', ['rx', 'tx']);
+
+// Deteksi anomali sederhana: bandingin sample TERBARU tiap container ke
+// baseline (rata-rata + stddev) dari ~1 jam sample sebelumnya. Bukan machine
+// learning apapun -- cuma "z-score" biasa, tapi cukup buat nangkep "RAM/CPU
+// container ini mendadak jauh di luar kebiasaannya sendiri" tanpa perlu
+// nyetel threshold tetap per container (threshold tetap gampang salah:
+// container database yang emang berat CPU-nya bakal selalu "over limit").
+const ANOMALY_COOLDOWN_MS = 30 * 60 * 1000;
+const lastAnomalyAt = {}; // `${id}:${metric}` -> timestamp
+function checkAnomaly(id, name, hist, metric, floorAbs) {
+  if (hist.length < 12) return; // belum cukup data buat baseline yang masuk akal
+  const vals = hist.slice(0, -1).map((p) => p[metric]).filter((v) => v != null);
+  const cur = hist[hist.length - 1][metric];
+  if (cur == null || vals.length < 10) return;
+  const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length;
+  const stddev = Math.sqrt(variance);
+  // stddev kecil (baseline stabil) bikin z-score gampang meledak walau
+  // selisihnya absolut kecil -- makanya WAJIB juga lewatin floorAbs.
+  if (cur < mean + Math.max(3 * stddev, floorAbs) || cur - mean < floorAbs) return;
+  const key = `${id}:${metric}`;
+  if (Date.now() - (lastAnomalyAt[key] || 0) < ANOMALY_COOLDOWN_MS) return;
+  lastAnomalyAt[key] = Date.now();
+  const label = metric === 'cpu' ? 'CPU' : 'RAM';
+  const curFmt = metric === 'cpu' ? cur.toFixed(1) + '%' : (cur / 1e6).toFixed(0) + ' MB';
+  const meanFmt = metric === 'cpu' ? mean.toFixed(1) + '%' : (mean / 1e6).toFixed(0) + ' MB';
+  ev.emit('container.anomaly',
+    `<b>${name}</b> ${label} melonjak ke ${curFmt} — jauh di atas kebiasaannya (rata-rata ~${meanFmt} sejam terakhir).`,
+    { key });
+}
+
 setInterval(async () => {
   let list = [];
   try { list = await docker.listContainers(); } catch { return; }
@@ -241,6 +272,10 @@ setInterval(async () => {
       const { used } = memUsage(s);
       const { rx, tx } = netStats(s);
       containerSeries.record(c.Id, { mem: used, cpu: cpuPercent(s), rx, tx });
+      const hist = containerSeries.get(c.Id);
+      const name = (c.Names?.[0] || '').replace(/^\//, '');
+      checkAnomaly(c.Id, name, hist, 'cpu', 20);       // minimal +20 poin persentase CPU dari baseline
+      checkAnomaly(c.Id, name, hist, 'mem', 200 * 1e6); // minimal +200MB RAM dari baseline
     } catch {}
   }
 }, 60000);

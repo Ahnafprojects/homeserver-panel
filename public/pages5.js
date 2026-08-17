@@ -99,6 +99,44 @@ VIEWS.database = () => {
   const fleetStatsArea = el('div');
   const fleetChartArea = customChartBlock((range) => api(`/db/fleet-history?range=${range}`), 'db.fleet.chart');
   let fleetChartMounted = false;
+
+  // Tes restore otomatis bulanan -- backup ada bukan jaminan datanya bisa
+  // dipulihkan. Tiap instance di-clone BENERAN ke instance sekali-pakai,
+  // jumlah baris tiap tabel dibandingin, instance-nya langsung dihapus lagi.
+  const restoreTestArea = el('div', { style: 'margin-top:14px' });
+  async function paintRestoreTest() {
+    let r;
+    try { r = await api('/db/restore-test/status'); } catch { r = { last: null }; }
+    const runBtn = el('button', { class: 'btn' }, 'Jalankan tes sekarang');
+    runBtn.onclick = async () => {
+      if (!confirm('Ini akan clone SEMUA instance basis data lokal ke instance sementara buat verifikasi, lalu menghapusnya lagi. Bisa makan waktu beberapa menit tergantung ukuran data. Lanjut?')) return;
+      runBtn.disabled = true; runBtn.textContent = 'Menjalankan tes… (bisa beberapa menit)';
+      try { const r2 = await api('/db/restore-test/run', { method: 'POST' });
+        toast(r2.results.every((x) => x.ok) ? 'Semua instance lolos tes restore' : 'Ada instance yang gagal — lihat detail di bawah');
+        paintRestoreTest();
+      } catch (e) { toast(e.message); }
+      finally { runBtn.disabled = false; runBtn.textContent = 'Jalankan tes sekarang'; }
+    };
+    const last = r.last;
+    const rows = (last?.results || []).map((x) => el('tr', {},
+      el('td', {}, x.instance),
+      el('td', {}, x.ok
+        ? el('span', { class: 'pill ok' }, 'lolos')
+        : el('span', { class: 'pill bad', title: x.error || (x.mismatches || []).join('; ') }, 'gagal')),
+      el('td', { style: 'color:var(--tx-3);font-size:11px' },
+        x.error || (x.mismatches?.length ? x.mismatches.join('; ') : (x.tables != null ? `${x.tables} tabel cocok` : '—')))));
+    restoreTestArea.replaceChildren(
+      el('div', { class: 'sec' }, 'Tes restore otomatis'),
+      el('div', { class: 'card' }, el('div', { class: 'card-b' },
+        el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+          'Jalan otomatis tiap bulan: tiap basis data lokal di-clone ke instance sekali-pakai, jumlah baris tiap tabel dibandingin sumber vs hasil restore, instance-nya langsung dihapus lagi. '
+          + (last ? `Terakhir jalan ${ago(last.t)}${last.manual ? ' (manual)' : ' (otomatis)'}.` : 'Belum pernah jalan.')),
+        el('div', { class: 'row', style: 'margin-bottom:10px' }, runBtn),
+        rows.length ? el('div', { class: 'tbl-wrap' }, el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Instance'), el('th', {}, 'Hasil'), el('th', {}, 'Detail'))),
+          el('tbody', {}, ...rows))) : '')));
+  }
+  paintRestoreTest();
   async function paintFleet() {
     try {
       const f = await api('/db/overview');
@@ -120,7 +158,8 @@ VIEWS.database = () => {
         fleetChartMounted = true;
         fleetArea.replaceChildren(
           el('div', { class: 'sec' }, 'Overview semua basis data'), fleetStatsArea,
-          el('div', { class: 'sec', style: 'margin-top:14px' }, 'Grafik custom'), fleetChartArea);
+          el('div', { class: 'sec', style: 'margin-top:14px' }, 'Grafik custom'), fleetChartArea,
+          restoreTestArea);
       }
     } catch { fleetArea.replaceChildren(); }
   }

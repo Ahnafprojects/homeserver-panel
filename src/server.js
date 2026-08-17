@@ -342,6 +342,79 @@ async function autoDrSnapshot() {
 autoDrSnapshot();
 setInterval(autoDrSnapshot, 6 * 3600 * 1000); // dicek tiap 6 jam, jalan ~1x/hari
 
+// Tes restore bulanan -- backup basis data ada, tapi "ada file dump" beda
+// jauh sama "dump-nya beneran bisa di-restore dan datanya utuh". Tiap
+// instance basis data lokal di-clone SUNGGUHAN ke instance sekali-pakai
+// (pakai dbaas.cloneInstance yang sudah ada: dump -> instance baru kosong
+// -> restore), jumlah baris tiap tabel dibandingin SUMBER vs HASIL RESTORE,
+// instance sekali-pakainya langsung dihapus lagi sesudahnya.
+const RESTORE_TEST_FILE = path.join(STATE_DIR, 'restore-test-status.json');
+const MONTH_MS = 30 * 24 * 3600 * 1000;
+async function runRestoreTest(manual = false) {
+  const results = [];
+  // Snapshot SEKARANG, bukan iterasi langsung atas dbaas.listInstances() --
+  // itu balikin referensi array LIVE yang dipakai internal dbaas.js.
+  // cloneInstance() di bawah nge-push instance sementara ke array itu
+  // (mutasi in-place), lalu destroy() di finally REASSIGN array-nya (bukan
+  // mutasi) -- akibatnya for-loop yang megang referensi array LAMA tetap
+  // "lihat" entry clone yang baru aja dihapus, terus getInstance() buat
+  // clone itu gagal ("Instance not found"). Snapshot .slice() di awal
+  // motong ketergantungan itu sepenuhnya.
+  const targets = dbaas.listInstances().filter((i) => !i.name.startsWith('restoretest-')).slice();
+  for (const inst of targets) {
+    const kind = dbaas.credentials(inst.id).kind;
+    if (!LIST_TABLES[kind]) continue; // engine tanpa information_schema (mis. redis) dilewati
+    let clone = null;
+    try {
+      clone = await dbaas.cloneInstance(inst.id, `restoretest-${Date.now().toString(36)}`);
+      const srcCfg = dbaas.credentials(inst.id);
+      const dstCfg = dbaas.credentials(clone.id);
+      const srcTables = (await dbQuery(srcCfg, LIST_TABLES[kind])).rows;
+      const mismatches = [];
+      for (const t of srcTables) {
+        const tbl = qualify({ kind, schema: t.schema, table: t.name });
+        const [a, b] = await Promise.all([
+          dbQuery(srcCfg, `SELECT COUNT(*) AS n FROM ${tbl}`),
+          dbQuery(dstCfg, `SELECT COUNT(*) AS n FROM ${tbl}`),
+        ]);
+        const na = +a.rows[0].n, nb = +b.rows[0].n;
+        if (na !== nb) mismatches.push(`${t.schema}.${t.name}: sumber ${na} baris, hasil restore ${nb} baris`);
+      }
+      results.push({ instance: inst.name, ok: mismatches.length === 0, tables: srcTables.length, mismatches });
+    } catch (e) {
+      results.push({ instance: inst.name, ok: false, error: e.message });
+    } finally {
+      if (clone) {
+        try {
+          const pkey = JSON.stringify(dbaas.credentials(clone.id));
+          const p2 = pools.get(pkey);
+          if (p2) { pools.delete(pkey); p2.end?.().catch?.(() => {}); }
+        } catch {}
+        await dbaas.destroy(clone.id, false).catch(() => {});
+      }
+    }
+  }
+  const status = { t: Date.now(), manual, results };
+  await fs.writeFile(RESTORE_TEST_FILE, JSON.stringify(status, null, 2)).catch(() => {});
+  if (results.length) {
+    const failed = results.filter((r) => !r.ok);
+    ev.emit(failed.length ? 'db.backup_failed' : 'db.restored',
+      failed.length
+        ? `Tes restore bulanan GAGAL untuk ${failed.length}/${results.length} basis data: ${failed.map((f) => f.instance).join(', ')}. Cek halaman Databases.`
+        : `Tes restore bulanan: ${results.length} basis data semua berhasil di-restore ke instance sementara & datanya utuh (jumlah baris cocok persis).`);
+  }
+  return status;
+}
+async function autoRestoreTest() {
+  let last = 0;
+  try { last = JSON.parse(await fs.readFile(RESTORE_TEST_FILE, 'utf8')).t || 0; } catch {}
+  if (Date.now() - last < MONTH_MS) return;
+  await runRestoreTest(false).catch(() => {});
+}
+setInterval(autoRestoreTest, 24 * 3600 * 1000); // dicek tiap hari, jalan ~1x/bulan
+// (Tidak dipanggil langsung saat startup, beda dari job lain -- clone
+// basis data itu operasi berat/lambat, jangan sampai nunggu di jalur boot.)
+
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
 // rusak (drive lepas, kredensial kadaluarsa, dst) dan layak jadi urgent
@@ -617,6 +690,13 @@ async function dbQuery(cfg, sql, params = []) {
       pool = new pg.Pool({ host: cfg.host, port: +cfg.port || 5432, user: cfg.user,
         password: cfg.password, database: cfg.database, max: 3,
         connectionTimeoutMillis: 8000, idleTimeoutMillis: 30000 });
+      // WAJIB ada listener 'error' -- pg Pool nembak event 'error' di background
+      // (mis. koneksi idle putus karena container-nya kehapus/restart) yang
+      // TIDAK terkait langsung ke query manapun yang lagi jalan. Tanpa listener
+      // ini, Node menganggapnya "unhandled 'error' event" dan CRASH SELURUH
+      // PROSES PANEL -- kebukti nyata pas nge-tes restore-test (clone instance
+      // dihapus tapi pool-nya masih coba reconnect di background, panel down).
+      pool.on('error', () => {});
       pools.set(key, pool);
     }
     const r = await pool.query(sql, params);
@@ -638,6 +718,7 @@ async function dbQuery(cfg, sql, params = []) {
     pool = mysql.createPool({ host: cfg.host, port: +cfg.port || 3306, user: cfg.user,
       password: cfg.password, database: cfg.database, connectionLimit: 3,
       connectTimeout: 8000, multipleStatements: true });
+    pool.on('error', () => {}); // sama alasannya kayak pool Postgres di atas
     pools.set(key, pool);
   }
   const [rows, fields] = await pool.query(sql, params);
@@ -1301,6 +1382,16 @@ const requestHandler = async (req, res) => {
           ev.emit('db.backup_ok', `Basis data <code>${dest.name}</code> dibuat sebagai clone dari instance lain.`);
           return ok(res, dest);
         } catch (e) { return fail(res, e.message, 400); }
+      }
+      if (p === '/api/db/restore-test/status' && req.method === 'GET') {
+        let last = null;
+        try { last = JSON.parse(await fs.readFile(RESTORE_TEST_FILE, 'utf8')); } catch {}
+        return ok(res, { last });
+      }
+      if (p === '/api/db/restore-test/run' && req.method === 'POST') {
+        const r = await runRestoreTest(true);
+        auth.audit(ses.username, 'restore-test-manual', JSON.stringify(r.results.map((x) => x.instance)));
+        return ok(res, r);
       }
       if ((m = p.match(/^\/api\/db\/instances\/([^/]+)\/rotate$/)) && req.method === 'POST') {
         await dbaas.rotatePassword(m[1]);

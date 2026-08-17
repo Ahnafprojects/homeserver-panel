@@ -401,6 +401,22 @@ VIEWS.stacks = () => {
             'Checkout — ' + sel.value, null, s.name);
           const pull = el('button', { class: 'btn', html: ic('down', 13) + '<span>Tarik update</span>' });
           pull.onclick = () => stream(`/api/stacks/${s.name}/pull`, 'Pull — ' + s.name, null, s.name);
+          const previewBtn = el('button', { class: 'btn', html: ic('layers', 13) + '<span>Buat preview</span>' });
+          previewBtn.onclick = () => {
+            const brInput = el('select', {}, ...g.branches.map((b) => el('option', { value: b }, b)));
+            const go2 = el('button', { class: 'btn pri' }, 'Deploy preview');
+            go2.onclick = () => {
+              closeDrawer();
+              stream(`/api/stacks/${s.name}/preview?branch=${encodeURIComponent(brInput.value)}`,
+                `Preview ${s.name} (${brInput.value})`, null, `${s.name}-pr-${brInput.value.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`);
+            };
+            openDrawer('Buat preview environment', el('div', {},
+              el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:12px;line-height:1.6' },
+                'Deploy branch ini sebagai stack TERPISAH (container & network sendiri) buat direview, tanpa ganggu stack utama. '
+                + 'Otomatis dihapus 7 hari kalau tidak dipakai lagi. Kalau docker-compose.yml stack ini punya port host tetap, deploy bisa gagal karena port-nya sudah dipakai stack utama.'),
+              el('div', { class: 'field' }, el('label', {}, 'Branch'), brInput),
+              el('div', { class: 'row' }, go2)));
+          };
           const tb = el('tbody');
           g.log.forEach(c => {
             const rb = el('button', { class: 'ib', title: 'Kembali ke commit ini', html: ic('restart', 13) });
@@ -412,7 +428,7 @@ VIEWS.stacks = () => {
           });
           body.append(el('div', { class: 'sec' }, 'Git'),
             el('div', { class: 'card' }, el('div', { class: 'card-b' },
-              el('div', { class: 'row' }, el('div', { style: 'flex:1' }, sel), sw, pull),
+              el('div', { class: 'row' }, el('div', { style: 'flex:1' }, sel), sw, pull, previewBtn),
               el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-top:8px' }, st.repo || ''))),
             el('div', { class: 'sec' }, 'Riwayat commit'),
             el('div', { class: 'card' }, el('div', { class: 'tbl-wrap', style: 'max-height:36vh' },
@@ -454,9 +470,10 @@ VIEWS.stacks = () => {
         const tr = el('tr', { style: 'cursor:pointer' },
           el('td', {}, el('div', { class: 'row' },
             el('i', { class: 'dot ' + (s.running ? 'up' : 'idle') }),
-            el('div', {}, el('div', { style: 'font-weight:500' }, s.name),
+            el('div', {}, el('div', { style: 'font-weight:500;display:flex;align-items:center;gap:6px' },
+                s.name, s.isPreview ? el('span', { class: 'pill warn', style: 'font-size:9.5px' }, 'PREVIEW') : ''),
               el('div', { style: 'font-size:10.5px;color:var(--tx-3)' },
-                s.source === 'git' ? (s.repo || 'git') : 'compose')))),
+                s.isPreview ? `dari ${s.previewOf} · ${s.branch}` : (s.source === 'git' ? (s.repo || 'git') : 'compose'))))),
           el('td', {}, el('span', { class: 'pill ' + (s.running ? 'ok' : '') },
             `${s.running}/${s.total} jalan`)),
           el('td', { style: 'color:var(--tx-3)' }, s.branch || '—'),

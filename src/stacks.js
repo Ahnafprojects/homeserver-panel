@@ -95,7 +95,8 @@ export async function listStacks() {
     } catch {}
     out.push({ name: d.name, running, total, source: m.source || 'compose',
       repo: m.repo || null, branch: m.branch || null,
-      updated: m.updated || null, lastDeploy: m.lastDeploy || null });
+      updated: m.updated || null, lastDeploy: m.lastDeploy || null,
+      isPreview: !!m.isPreview, previewOf: m.previewOf || null });
   }
   return out;
 }
@@ -136,9 +137,20 @@ export async function removeStack(name) {
   const meta = loadMeta(); delete meta[safeName(name)]; saveMeta(meta);
 }
 
+export function markPreview(name, previewOf, branch) {
+  const meta = loadMeta();
+  meta[safeName(name)] = { ...(meta[safeName(name)] || {}), isPreview: true, previewOf, branch, updated: Date.now() };
+  saveMeta(meta);
+}
+
 export function markDeploy(name, ok) {
   const meta = loadMeta();
-  meta[safeName(name)] = { ...(meta[safeName(name)] || {}), lastDeploy: Date.now(), lastOk: ok };
+  const cur = meta[safeName(name)] || {};
+  // "updated" ikut di-refresh di sini (bukan cuma lastDeploy) -- buat preview
+  // environment, ini yang dipakai hitung TTL 7 hari (lihat autoCleanPreviews
+  // di server.js): deploy ulang = masih dipakai, timer 7 harinya harus reset.
+  meta[safeName(name)] = { ...cur, lastDeploy: Date.now(), lastOk: ok,
+    updated: cur.isPreview ? Date.now() : cur.updated };
   saveMeta(meta);
 }
 

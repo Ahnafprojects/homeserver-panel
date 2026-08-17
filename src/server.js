@@ -415,6 +415,27 @@ setInterval(autoRestoreTest, 24 * 3600 * 1000); // dicek tiap hari, jalan ~1x/bu
 // (Tidak dipanggil langsung saat startup, beda dari job lain -- clone
 // basis data itu operasi berat/lambat, jangan sampai nunggu di jalur boot.)
 
+// Preview environment (lihat action 'preview' di rute stacks) numpuk kalau
+// dibiarkan -- tiap branch/PR baru bikin stack+container baru yang makan
+// RAM/disk. Otomatis dibuang 7 hari sejak terakhir dibuat/deploy ulang.
+const PREVIEW_TTL_MS = 7 * 24 * 3600 * 1000;
+async function autoCleanPreviews() {
+  let list = [];
+  try { list = await stacks.listStacks(); } catch { return; }
+  for (const s of list) {
+    if (!s.isPreview) continue;
+    const age = Date.now() - (s.updated || 0);
+    if (age < PREVIEW_TTL_MS) continue;
+    try {
+      await stacks.removeStack(s.name);
+      ev.emit('deploy.preview_cleaned',
+        `Preview <code>${s.name}</code> dihapus otomatis (sudah lebih dari 7 hari tidak dipakai).`, { key: s.name });
+      auth.audit('system', 'preview-auto-cleanup', s.name);
+    } catch {}
+  }
+}
+setInterval(autoCleanPreviews, 24 * 3600 * 1000);
+
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
 // rusak (drive lepas, kredensial kadaluarsa, dst) dan layak jadi urgent
@@ -2255,7 +2276,7 @@ const requestHandler = async (req, res) => {
       }
 
       // Aksi panjang memakai SSE supaya log build terlihat saat berjalan.
-      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout|autodeploy)$/))) {
+      if ((m = p.match(/^\/api\/stacks\/([^/]+)\/(deploy|stop|clone|pull|checkout|autodeploy|preview)$/))) {
         const [, name, action] = m;
         res.writeHead(200, { 'Content-Type': 'text/event-stream',
           'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -2397,6 +2418,54 @@ const requestHandler = async (req, res) => {
             const c = await stacks.gitClone(name, repo, branch, send);
             auth.audit(ses.username, 'git-clone', `${name} ${repo}`);
             return done(c);
+          }
+          // Preview environment: clone stack GIT yang sudah ada, tapi di
+          // BRANCH lain, ke stack BARU yang terpisah total (folder, container,
+          // network beda) -- biar bisa lihat/tes branch tanpa ganggu stack
+          // utama yang lagi jalan. Dibersihkan otomatis 7 hari kalau tidak
+          // di-deploy ulang (lihat autoCleanPreviews di bawah).
+          if (action === 'preview') {
+            const branch = q.get('branch');
+            if (!branch) { send('ERROR: branch wajib diisi'); return done(1); }
+            const src = await stacks.readStack(name).catch(() => null);
+            if (!src || src.source !== 'git' || !src.repo) {
+              send('ERROR: stack sumber harus bertipe git (punya repo)'); return done(1);
+            }
+            const slug = branch.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 30);
+            const previewName = `${name}-pr-${slug}`.slice(0, 63);
+            send(`$ git clone ${src.repo} (branch ${branch}) -> stack baru "${previewName}"`);
+            const c1 = await stacks.gitClone(previewName, src.repo, branch, send);
+            if (c1 !== 0) return done(c1);
+            stacks.markPreview(previewName, name, branch);
+            // Stack yang di-deploy lewat "Deploy website" (autodeploy.js) itu
+            // Dockerfile/docker-compose.yml-nya di-GENERATE lokal, TIDAK ikut
+            // ke-commit ke repo git -- clone barusan jadi tidak punya file
+            // itu sama sekali. Salin dari stack sumber, tapi port host-nya
+            // WAJIB diganti (port asli stack utama sudah dipakai).
+            const previewDir = stacks.dirOf(previewName);
+            const srcDir = stacks.dirOf(name);
+            if (!fsSync.existsSync(path.join(previewDir, 'docker-compose.yml'))
+                && fsSync.existsSync(path.join(srcDir, 'docker-compose.yml'))) {
+              send('$ (repo ini tidak menyimpan docker-compose.yml sendiri -- disalin dari konfigurasi stack sumber, port host diganti otomatis)');
+              for (const f of ['Dockerfile', 'docker-compose.yml', 'nginx.conf', 'nginx-lb.conf']) {
+                try { await fs.copyFile(path.join(srcDir, f), path.join(previewDir, f)); } catch {}
+              }
+              const freePort = await autodeploy.findFreePort();
+              let compose = await fs.readFile(path.join(previewDir, 'docker-compose.yml'), 'utf8');
+              compose = compose.replace(/"(\d+):(\d+)"/, `"${freePort}:$2"`);
+              await fs.writeFile(path.join(previewDir, 'docker-compose.yml'), compose);
+              send(`$ preview akan diakses di port ${freePort}`);
+            } else {
+              send('$ (catatan: kalau docker-compose.yml stack ini punya port host TETAP, deploy preview bisa gagal karena port itu sudah dipakai stack utama -- ubah dulu port di compose.yml preview kalau perlu)');
+            }
+            send('$ docker compose up -d --build');
+            const c2 = await stacks.deploy(previewName, send);
+            auth.audit(ses.username, 'stack-preview', `${name} (${branch}) -> ${previewName}`);
+            ev.emit(c2 === 0 ? 'deploy.success' : 'deploy.failed',
+              `Preview <code>${previewName}</code> (branch <code>${branch}</code> dari <code>${name}</code>) `
+              + (c2 === 0 ? 'berhasil di-deploy. Otomatis dihapus dalam 7 hari kalau tidak dipakai lagi.' : `gagal (kode ${c2}).`),
+              { key: previewName });
+            return done(c2);
           }
           if (action === 'pull') { send('$ git pull');
             return done(await stacks.gitPull(name, send)); }

@@ -58,6 +58,7 @@ export const CATALOG = {
   'deploy.success':          { c: 'deploy', s: 'info',   t: 'Deploy succeeded' },
   'deploy.webhook':          { c: 'deploy', s: 'info',   t: 'New push detected' },
   'deploy.rollback':         { c: 'deploy', s: 'info',   t: 'Rollback performed' },
+  'deploy.preview_cleaned':  { c: 'deploy', s: 'info',   t: 'Preview environment removed automatically' },
 
   // ── Ketersediaan ──
   'uptime.down':             { c: 'uptime', s: 'urgent', t: 'Service is down' },

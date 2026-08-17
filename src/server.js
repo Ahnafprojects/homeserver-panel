@@ -885,9 +885,17 @@ const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup', '
 
 // Token buat script HOST (PAM SSH login, cron alert, dll -- yang jalan DI
 // LUAR container panel sama sekali, jadi gak bisa pakai sesi cookie) nitip
-// kejadian ke notification center web. Dibuat sekali, ditulis ke /state
-// (yang di host-nya kebaca di /srv/panel-state) biar script bash bisa
-// baca langsung tanpa perlu setup apa-apa lagi.
+// kejadian ke notification center web. Dibuat sekali, disimpan di /state
+// buat referensi panel sendiri, TAPI juga disalin ke /etc/server-alerts.conf
+// (lewat mount /host/root yang sudah ada) -- BUKAN ke file/folder baru.
+// Alasannya: /srv/panel-state (folder /state) sengaja 700 root-only (isinya
+// vault.key, secrets.json, dst, memang harus dikunci ketat), sementara
+// script PAM (ssh-login-alert dkk) jalan dengan privilese USER YANG LOGIN,
+// bukan root -- jadi gak akan pernah bisa baca file di dalam /state sama
+// sekali. server-alerts.conf sudah TERBUKTI bisa diakses dari konteks yang
+// sama persis (itu yang dipakai notify() buat kirim Telegram, dan itu
+// selalu jalan) -- jadi token ini numpang di file yang sama, bukan bikin
+// jalur akses baru yang belum tentu beres.
 const HOST_NOTIFY_TOKEN_FILE = path.join(STATE_DIR, 'host-notify-token.txt');
 let HOST_NOTIFY_TOKEN = '';
 try { HOST_NOTIFY_TOKEN = fsSync.readFileSync(HOST_NOTIFY_TOKEN_FILE, 'utf8').trim(); } catch {}
@@ -895,6 +903,13 @@ if (!HOST_NOTIFY_TOKEN) {
   HOST_NOTIFY_TOKEN = crypto.randomBytes(24).toString('base64url');
   try { fsSync.mkdirSync(STATE_DIR, { recursive: true }); fsSync.writeFileSync(HOST_NOTIFY_TOKEN_FILE, HOST_NOTIFY_TOKEN); } catch {}
 }
+try {
+  const alertsConf = '/host/root/etc/server-alerts.conf';
+  const cur = fsSync.readFileSync(alertsConf, 'utf8');
+  if (!cur.includes('HOST_NOTIFY_TOKEN=')) {
+    fsSync.appendFileSync(alertsConf, `\nHOST_NOTIFY_TOKEN=${HOST_NOTIFY_TOKEN}\n`);
+  }
+} catch {} // file gak ada (mis. belum pernah jalanin setup-alerts.sh) -- gak fatal, cuma fitur ini gak aktif
 
 function sessionOf(req) {
   const t = cookieOf(req, 'sid');

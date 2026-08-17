@@ -149,27 +149,35 @@ cat > /usr/local/bin/ssh-login-alert <<'SCRIPT_EOF'
 set -uo pipefail
 [[ "${PAM_TYPE:-}" == "open_session" ]] || exit 0
 [[ "${PAM_SERVICE:-}" == "sshd" ]] || exit 0
-/usr/local/bin/notify "🔓 Login SSH" \
+# setsid: lepas SEPENUHNYA dari sesi PAM/SSH yang manggil script ini --
+# tanpa ini, kerjaan yang di-background (&) doang kadang ikut kepotong
+# kalau sesi SSH-nya buru-buru ditutup sebelum curl/notify sempat kelar
+# (kebukti nyata: 1 dari 4 login beneran hilang gak kekirim ke web,
+# padahal Telegram-nya sama-sama di-background tapi lebih jarang kena
+# karena request-nya lebih ringan/cepat).
+setsid /usr/local/bin/notify "🔓 Login SSH" \
 "User: <code>${PAM_USER:-?}</code>
 Dari IP: <code>${PAM_RHOST:-?}</code>
 
 Kalau ini bukan lu, SEGERA:
 1. <code>sudo passwd ${PAM_USER:-user}</code>
 2. <code>sudo ufw deny from ${PAM_RHOST:-IP}</code>
-3. cek: <code>last -20</code>" &
+3. cek: <code>last -20</code>" < /dev/null &> /dev/null &
+disown
 # Nitip juga ke notification center web panel (dobel sama Telegram di atas
 # itu sengaja) -- token dibaca langsung dari state panel, gak perlu setup
 # apa-apa lagi. Diam-diam gagal kalau panel belum jalan/token belum ada.
-{
-  TOKF=/srv/panel-state/host-notify-token.txt
-  if [[ -r "$TOKF" ]]; then
-    TOK=$(cat "$TOKF")
-    curl -fsS --max-time 5 -X POST "http://127.0.0.1:8090/api/events/host" \
-      -H "Authorization: Bearer ${TOK}" -H "Content-Type: application/json" \
-      -d "{\"type\":\"sec.ssh_login\",\"message\":\"<b>${PAM_USER:-?}</b> login SSH dari <code>${PAM_RHOST:-?}</code>.\",\"meta\":{\"key\":\"${PAM_RHOST:-?}\"}}" \
-      -o /dev/null 2>/dev/null || true
-  fi
-} &
+setsid bash -c '
+  CONF=/etc/server-alerts.conf
+  [[ -r "$CONF" ]] || exit 0
+  . "$CONF"
+  [[ -n "${HOST_NOTIFY_TOKEN:-}" ]] || exit 0
+  curl -fsS --max-time 5 -X POST "http://127.0.0.1:8090/api/events/host" \
+    -H "Authorization: Bearer ${HOST_NOTIFY_TOKEN}" -H "Content-Type: application/json" \
+    -d "{\"type\":\"sec.ssh_login\",\"message\":\"<b>'"${PAM_USER:-?}"'</b> login SSH dari <code>'"${PAM_RHOST:-?}"'</code>.\",\"meta\":{\"key\":\"'"${PAM_RHOST:-?}"'\"}}" \
+    -o /dev/null 2>/dev/null || true
+' < /dev/null &> /dev/null &
+disown
 exit 0
 SCRIPT_EOF
 chmod 755 /usr/local/bin/ssh-login-alert

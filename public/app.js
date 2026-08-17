@@ -1493,38 +1493,52 @@ VIEWS.monitor = () => {
   addAction('Add check', 'plus', () => form(), 'btn pri');
   addAction('Refresh', 'refresh', () => load());
 
-  function form() {
+  async function form() {
+    let containerNames = [];
+    try { containerNames = (await api('/containers')).containers.map((c) => c.name); } catch {}
+
     const name = el('input', { placeholder: 'My API' });
     const type = el('select', {}, el('option', { value: 'http' }, 'HTTP / HTTPS'),
-      el('option', { value: 'tcp' }, 'TCP port'));
+      el('option', { value: 'tcp' }, 'TCP port'),
+      el('option', { value: 'exec' }, 'Command check (di dalam container)'));
     const url = el('input', { placeholder: 'https://example.com/health' });
     const host = el('input', { placeholder: 'db-toko' });
     const port = el('input', { placeholder: '5432', inputmode: 'numeric' });
+    const execContainer = el('select', {}, ...containerNames.map((n) => el('option', { value: n }, n)));
+    const execCmd = el('input', { placeholder: 'mis. curl -f localhost:3000/health, atau pg_isready' });
     const httpF = el('div', { class: 'field' }, el('label', {}, 'URL'), url);
     const tcpF = el('div', { style: 'display:none' },
       el('div', { class: 'field' }, el('label', {}, 'Host'), host),
       el('div', { class: 'field' }, el('label', {}, 'Port'), port));
+    const execF = el('div', { style: 'display:none' },
+      el('div', { class: 'field' }, el('label', {}, 'Container'), execContainer),
+      el('div', { class: 'field' }, el('label', {}, 'Command'), execCmd));
     type.onchange = () => {
       httpF.style.display = type.value === 'http' ? '' : 'none';
       tcpF.style.display = type.value === 'tcp' ? '' : 'none';
+      execF.style.display = type.value === 'exec' ? '' : 'none';
     };
     const save = el('button', { class: 'btn pri' }, 'Save');
     save.onclick = async () => {
       if (!name.value.trim()) return toast('Name is required');
+      if (type.value === 'exec' && !execCmd.value.trim()) return toast('Command wajib diisi');
       try {
         await api('/monitor/checks', { method: 'POST', body: JSON.stringify({
           name: name.value, type: type.value, url: url.value,
-          host: host.value, port: port.value }) });
+          host: host.value, port: port.value,
+          container: execContainer.value, cmd: execCmd.value }) });
         closeDrawer(); toast('Check added'); load();
       } catch (e) { toast(e.message); }
     };
     openDrawer('New uptime check', el('div', {},
       el('div', { class: 'field' }, el('label', {}, 'Name'), name),
       el('div', { class: 'field' }, el('label', {}, 'Type'), type),
-      httpF, tcpF,
+      httpF, tcpF, execF,
       el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
         'Checked every 60 seconds. HTTP counts any reply below 500 as up; '
-        + 'TCP only checks that the port accepts a connection.'),
+        + 'TCP only checks that the port accepts a connection. Command check '
+        + 'jalanin command DI DALAM container itu (docker exec) -- exit code 0 = up, '
+        + 'apapun selain itu = down. Cocok buat aplikasi yang "running" tapi macet total di dalam.'),
       el('div', { class: 'row' }, save)));
   }
 
@@ -1565,7 +1579,7 @@ VIEWS.monitor = () => {
         : el('div', { class: 'empty', style: 'padding:22px' }, 'No outages recorded')),
       el('div', { class: 'sec' }, 'Target'),
       el('div', { class: 'card' }, el('div', { class: 'card-b mono', style: 'font-size:11.5px' },
-        c.type === 'tcp' ? `${c.host}:${c.port}` : c.url)),
+        c.type === 'tcp' ? `${c.host}:${c.port}` : c.type === 'exec' ? `${c.container}: ${c.cmd}` : c.url)),
       el('div', { class: 'sec' }, 'Halaman status publik'),
       el('div', { class: 'card' }, el('div', { class: 'card-b' },
         el('label', { class: 'row', style: 'cursor:pointer;font-weight:400' },
@@ -1655,7 +1669,7 @@ VIEWS.monitor = () => {
             bars,
             el('div', { class: 'row', style: 'margin-top:8px' },
               el('span', { style: 'font-size:10.5px;color:var(--tx-3)' },
-                c.type === 'tcp' ? `${c.host}:${c.port}` : (c.url || '')),
+                c.type === 'tcp' ? `${c.host}:${c.port}` : c.type === 'exec' ? `${c.container}: ${c.cmd}` : (c.url || '')),
               el('span', { class: 'sp' }),
               el('span', { style: 'font-size:10.5px;color:var(--tx-3)' },
                 c.at ? 'checked ' + ago(c.at) : '')),

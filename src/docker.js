@@ -166,4 +166,38 @@ export const dockerExtra = {
     req.write(payload); req.end();
   }),
   execResize: (execId, h, w) => request('POST', `/exec/${execId}/resize?h=${h}&w=${w}`),
+
+  // Exec non-interaktif (Tty:false, buat health check kustom / command
+  // check) -- beda dari execCreate/execStart di atas yang Tty:true buat
+  // terminal web. Balikin { code, output } dan bisa dibatasi timeout.
+  execRun: (id, cmd, timeoutMs = 10000) => new Promise((resolve) => {
+    (async () => {
+      let execId;
+      try {
+        const e = await request('POST', `/containers/${id}/exec`, {
+          AttachStdout: true, AttachStderr: true, Tty: false, Cmd: cmd });
+        execId = e.Id;
+      } catch (err) { return resolve({ code: -1, output: 'exec create gagal: ' + err.message }); }
+      const payload = JSON.stringify({ Detach: false, Tty: false });
+      const chunks = [];
+      const timer = setTimeout(() => { try { req.destroy(); } catch {} }, timeoutMs);
+      const req = http.request({
+        socketPath: SOCK, path: `/exec/${execId}/start`, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      }, (res) => {
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', async () => {
+          clearTimeout(timer);
+          const raw = Buffer.concat(chunks);
+          let output = '';
+          try { output = demuxDockerStream(raw); } catch { output = raw.toString('utf8'); }
+          let code = -1;
+          try { const info = await request('GET', `/exec/${execId}/json`); code = info.ExitCode ?? -1; } catch {}
+          resolve({ code, output: output.trim().slice(0, 2000) });
+        });
+      });
+      req.on('error', (err) => { clearTimeout(timer); resolve({ code: -1, output: 'timeout/error: ' + err.message }); });
+      req.write(payload); req.end();
+    })();
+  }),
 };

@@ -338,6 +338,12 @@ async function probe(c) {
         s.on('timeout', () => { s.destroy(); reject(new Error('timeout')); });
         s.on('error', reject);
       });
+    } else if (c.type === 'exec') {
+      // Health check kustom: jalanin command DI DALAM container (docker exec),
+      // beda dari cek "running/tidak" bawaan Docker -- container bisa
+      // "running" tapi aplikasinya di dalam macet total, exec ini nangkep itu.
+      const r = await dockerExtra.execRun(c.container, ['sh', '-c', c.cmd], 10000);
+      if (r.code !== 0) throw new Error(`exit ${r.code}${r.output ? ': ' + r.output.slice(0, 150) : ''}`);
     } else {
       const r = await fetch(c.url, { signal: AbortSignal.timeout(8000), redirect: 'manual' });
       if (r.status >= 500) throw new Error('HTTP ' + r.status);
@@ -394,7 +400,8 @@ async function runChecks() {
     else if (c.downSince) { c.lastOutage = { from: c.downSince, to: c.at }; c.downSince = null; }
     const wasUp = c.up !== false;
     if (r.up !== wasUp) {
-      const target = c.type === 'tcp' ? `${c.host}:${c.port}` : c.url;
+      const target = c.type === 'tcp' ? `${c.host}:${c.port}`
+        : c.type === 'exec' ? `${c.container}: ${c.cmd}` : c.url;
       const msg = r.up
         ? `<b>${c.name}</b> sudah normal lagi.\n`
           + `Target: <code>${target}</code>\n`
@@ -2793,7 +2800,8 @@ const requestHandler = async (req, res) => {
         if (req.method === 'POST') {
           const b = await readJson(req);
           checks.push({ id: Date.now().toString(36), name: b.name, type: b.type || 'http',
-            url: b.url, host: b.host, port: b.port, hist: [], public: false });
+            url: b.url, host: b.host, port: b.port, container: b.container, cmd: b.cmd,
+            hist: [], public: false });
           saveChecks(); runChecks();
           return ok(res);
         }

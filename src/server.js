@@ -16,6 +16,7 @@ import * as webpush from './webpush.js';
 import * as vulnScan from './vulnScan.js';
 import * as mailer from './mailer.js';
 import * as logRetention from './logRetention.js';
+import * as drSnapshot from './drSnapshot.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -324,6 +325,22 @@ async function autoCleanLogs() {
 }
 autoCleanLogs();
 setInterval(autoCleanLogs, 24 * 3600 * 1000);
+
+// Snapshot DR (seluruh /state panel) otomatis tiap hari -- disimpan di
+// /data biar ikut numpang di jalur backup HDD+GDrive yang sudah ada
+// (lihat drSnapshot.js). Cukup sekali sehari, sudah nyimpen 5 versi
+// terakhir sendiri (drSnapshot.js), jadi status "terakhir jalan"
+// dicek dulu biar restart panel gak nge-trigger snapshot baru tiap kali.
+async function autoDrSnapshot() {
+  try {
+    const snaps = await drSnapshot.listSnapshots();
+    const last = snaps[0]?.t || 0;
+    if (Date.now() - last < 20 * 3600 * 1000) return; // sudah ada yg <20 jam, skip
+    await drSnapshot.createSnapshot();
+  } catch {}
+}
+autoDrSnapshot();
+setInterval(autoDrSnapshot, 6 * 3600 * 1000); // dicek tiap 6 jam, jalan ~1x/hari
 
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
@@ -954,7 +971,7 @@ const requestHandler = async (req, res) => {
         [/^\/api\/db\//, ['database']],
         [/^\/api\/(sites|tunnel)/, ['domains']],
         [/^\/api\/jobs/, ['jobs']],
-        [/^\/api\/(secrets|backups|gdrive)/, ['vault']],
+        [/^\/api\/(secrets|backups|gdrive|dr)/, ['vault']],
         [/^\/api\/(images|volumes|networks|prune|disk-analysis|logs\/retention)/, ['resources']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
@@ -2033,6 +2050,26 @@ const requestHandler = async (req, res) => {
           successRate: lines.length ? Math.round((ok2.length / lines.length) * 100) : null,
           avgSizeBytes: avgSize, avgXferBytes: avgXfer,
         });
+      }
+
+      // ---- Disaster-recovery snapshot: seluruh /state panel, bukan cuma
+      // data aplikasi (yang sudah dicover backup HDD/GDrive biasa) ----
+      if (p === '/api/dr/snapshots' && req.method === 'GET') {
+        return ok(res, { snapshots: await drSnapshot.listSnapshots() });
+      }
+      if (p === '/api/dr/snapshots' && req.method === 'POST') {
+        const r = await drSnapshot.createSnapshot();
+        auth.audit(ses.username, 'dr-snapshot', r.file);
+        return ok(res, r);
+      }
+      if ((m = p.match(/^\/api\/dr\/snapshots\/(panel-state-[0-9T-]+Z\.tar\.gz)\/download$/))) {
+        const full = drSnapshot.snapshotPath(m[1]);
+        if (!full) return fail(res, 'Snapshot not found', 404);
+        const st = await fs.stat(full);
+        res.writeHead(200, { 'Content-Type': 'application/gzip',
+          'Content-Length': st.size, 'Content-Disposition': `attachment; filename="${m[1]}"` });
+        fsSync.createReadStream(full).pipe(res);
+        return;
       }
 
       // ---- Google Drive (off-site backup, multi-akun) ----

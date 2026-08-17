@@ -668,6 +668,42 @@ VIEWS.vault = () => {
     }
     paintGdrive();
 
+    // ── Disaster recovery: snapshot SELURUH state panel (users, vault
+    // secrets, uptime checks, API token, dst) -- backup HDD/GDrive di atas
+    // cuma nyalin data APLIKASI, bukan panel-nya sendiri. Kalau laptop mati
+    // total, tanpa ini panel harus disetup ulang dari nol biar pun data
+    // aplikasinya selamat.
+    const drArea = el('div', { style: 'margin-bottom:16px' });
+    async function paintDr() {
+      let r;
+      try { r = await api('/dr/snapshots'); } catch { r = { snapshots: [] }; }
+      const makeBtn = el('button', { class: 'btn pri' }, 'Buat snapshot sekarang');
+      makeBtn.onclick = async () => {
+        makeBtn.disabled = true; makeBtn.textContent = 'Membuat…';
+        try { await api('/dr/snapshots', { method: 'POST' }); toast('Snapshot dibuat'); paintDr(); }
+        catch (e) { toast(e.message); }
+        finally { makeBtn.disabled = false; makeBtn.textContent = 'Buat snapshot sekarang'; }
+      };
+      const rows = r.snapshots.map((s) => {
+        const dl = el('a', { class: 'ib', title: 'Unduh', html: ic('down', 14),
+          href: '/api/dr/snapshots/' + encodeURIComponent(s.file) + '/download' });
+        return el('tr', {}, el('td', { class: 'mono', style: 'font-size:11px' }, s.file),
+          el('td', { class: 'num' }, bytes(s.size)),
+          el('td', { style: 'color:var(--tx-3)' }, ago(s.t)),
+          el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, dl)));
+      });
+      drArea.replaceChildren(
+        el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+          'Snapshot otomatis tiap hari (nyimpen 5 terakhir), disimpan di /data biar ikut kebawa lewat backup HDD & Google Drive di atas -- tanpa perlu setup terpisah. '
+          + 'Isinya: akun user, secrets vault (terenkripsi), daftar uptime check, API token, dan setelan lain -- BUKAN data aplikasi (itu sudah dicover backup biasa).'),
+        el('div', { class: 'row', style: 'margin-bottom:10px' }, makeBtn),
+        rows.length ? el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
+          el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Snapshot'),
+            el('th', { class: 'num' }, 'Size'), el('th', {}, 'Dibuat'), el('th', {}, ''))),
+            el('tbody', {}, ...rows)))) : '');
+    }
+    paintDr();
+
     // ── Overview & grafik riwayat backup (HDD + Drive) ── data-nya dari
     // log yang ditulis /usr/local/bin/server-backup tiap run (bukan
     // disampling panel — backup cuma jalan sekali sehari, beda dari
@@ -747,6 +783,8 @@ VIEWS.vault = () => {
       hddArea,
       el('div', { class: 'sec' }, 'Off-site: Google Drive'),
       gdriveArea,
+      el('div', { class: 'sec' }, 'Disaster recovery: state panel'),
+      drArea,
       backupHistArea,
       el('div', { class: 'sec' }, 'Backup manual'),
       el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },

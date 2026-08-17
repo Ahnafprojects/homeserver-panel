@@ -744,6 +744,33 @@ VIEWS.resources = () => {
   }
 
   /* ── Image ── */
+  function openVulnScan(image) {
+    const box = el('div', {}, el('div', { style: 'color:var(--tx-3);font-size:12.5px' }, 'Memindai lewat Trivy… bisa sampai 1-2 menit buat image baru (lagi unduh database kerentanan).'));
+    openDrawer('Pindai: ' + image, box);
+    $('#drawer').classList.add('wide');
+    api('/images/vuln-scan', { method: 'POST', body: JSON.stringify({ image }) }).then((r) => {
+      if (r.error) { box.replaceChildren(el('div', { style: 'color:var(--bad)' }, r.error)); return; }
+      const sevPill = (s) => el('span', { class: 'pill ' + (s === 'CRITICAL' ? 'bad' : 'warn') }, s);
+      const tb = el('tbody', {}, ...r.vulns.map((v) => el('tr', {},
+        el('td', {}, sevPill(v.severity)),
+        el('td', { class: 'mono' }, v.id),
+        el('td', {}, v.pkg),
+        el('td', { class: 'mono', style: 'color:var(--tx-3)' }, v.installed),
+        el('td', { class: 'mono', style: 'color:var(--good)' }, v.fixed || '—'))));
+      box.replaceChildren(
+        el('div', { class: 'row', style: 'margin-bottom:12px;flex-wrap:wrap' },
+          el('span', { class: 'pill' }, `${r.total} kerentanan`),
+          r.critical ? el('span', { class: 'pill bad' }, `${r.critical} critical`) : '',
+          r.high ? el('span', { class: 'pill warn' }, `${r.high} high`) : '',
+          el('span', { style: 'font-size:11px;color:var(--tx-3)' }, 'Dicek ' + ago(r.t))),
+        r.total === 0
+          ? el('div', { style: 'color:var(--good);font-size:13px' }, 'Tidak ada kerentanan HIGH/CRITICAL yang terdeteksi.')
+          : el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
+              el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Severity'), el('th', {}, 'CVE'),
+                el('th', {}, 'Package'), el('th', {}, 'Terpasang'), el('th', {}, 'Fix'))), tb))));
+    }).catch((e) => box.replaceChildren(el('div', { style: 'color:var(--bad)' }, e.message)));
+  }
+
   function renderImages(body) {
     const used = new Set(data.containers.map(c => c.image));
     const pull = el('button', { class: 'btn pri', html: ic('down', 13) + '<span>Tarik image</span>' });
@@ -786,6 +813,8 @@ VIEWS.resources = () => {
       const dipakai = i.tags.some(t => used.has(t));
       const upd = i.tags.map(t => updByTag.get(t)).find(Boolean);
       const pullThis = upd ? el('button', { class: 'ib', title: 'Tarik versi baru', html: ic('down', 14) }) : null;
+      const scanBtn = el('button', { class: 'ib', title: 'Pindai kerentanan (Trivy)', html: ic('lock', 14) });
+      scanBtn.onclick = () => openVulnScan(tag);
       if (pullThis) pullThis.onclick = async () => {
         pullThis.disabled = true;
         try { await api('/images/pull', { method: 'POST', body: JSON.stringify({ name: tag }) });
@@ -801,7 +830,7 @@ VIEWS.resources = () => {
         el('td', { class: 'mono', style: 'color:var(--tx-3)' }, i.id),
         el('td', { class: 'num' }, bytes(i.size)),
         el('td', { style: 'color:var(--tx-3)' }, ago(i.created)),
-        el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, pullThis || '', delBtn(async () => {
+        el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, pullThis || '', scanBtn, delBtn(async () => {
           if (dipakai) return toast('This image is in use by a container');
           if (!confirm(`Hapus image ${tag}?`)) return;
           try { await api('/images/' + encodeURIComponent(i.tags[0] || i.id), { method: 'DELETE' });

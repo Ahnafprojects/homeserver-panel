@@ -13,6 +13,7 @@ import { makeSeriesStore } from './historyStore.js';
 import * as registryCheck from './registryCheck.js';
 import * as apiTokens from './apiTokens.js';
 import * as webpush from './webpush.js';
+import * as vulnScan from './vulnScan.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -2211,6 +2212,18 @@ const requestHandler = async (req, res) => {
         const imgs = await docker.listImages();
         const updates = await registryCheck.checkImages(imgs);
         return ok(res, { updates, checked: imgs.filter((i) => i.RepoTags?.length).length });
+      }
+      // Pindai kerentanan (Trivy) -- hasil dicache 12 jam per image supaya
+      // gak nge-scan ulang tiap buka halaman (sekali scan bisa >30 detik).
+      if (p === '/api/images/vuln-scan' && req.method === 'POST') {
+        const b = await readJson(req);
+        if (!b.image) return fail(res, 'image wajib diisi', 400);
+        const r = await vulnScan.scanImage(b.image, { force: !!b.force });
+        auth.audit(ses.username, 'vuln-scan', b.image);
+        return ok(res, r);
+      }
+      if (p === '/api/images/vuln-cache' && req.method === 'GET') {
+        return ok(res, { cache: vulnScan.allCached() });
       }
       if (p === '/api/images/pull' && req.method === 'POST') {
         const b = await readJson(req);

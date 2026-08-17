@@ -157,6 +157,19 @@ Kalau ini bukan lu, SEGERA:
 1. <code>sudo passwd ${PAM_USER:-user}</code>
 2. <code>sudo ufw deny from ${PAM_RHOST:-IP}</code>
 3. cek: <code>last -20</code>" &
+# Nitip juga ke notification center web panel (dobel sama Telegram di atas
+# itu sengaja) -- token dibaca langsung dari state panel, gak perlu setup
+# apa-apa lagi. Diam-diam gagal kalau panel belum jalan/token belum ada.
+{
+  TOKF=/srv/panel-state/host-notify-token.txt
+  if [[ -r "$TOKF" ]]; then
+    TOK=$(cat "$TOKF")
+    curl -fsS --max-time 5 -X POST "http://127.0.0.1:8090/api/events/host" \
+      -H "Authorization: Bearer ${TOK}" -H "Content-Type: application/json" \
+      -d "{\"type\":\"sec.ssh_login\",\"message\":\"<b>${PAM_USER:-?}</b> login SSH dari <code>${PAM_RHOST:-?}</code>.\",\"meta\":{\"key\":\"${PAM_RHOST:-?}\"}}" \
+      -o /dev/null 2>/dev/null || true
+  fi
+} &
 exit 0
 SCRIPT_EOF
 chmod 755 /usr/local/bin/ssh-login-alert

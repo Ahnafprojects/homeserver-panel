@@ -881,7 +881,20 @@ const ipOf = (req) => {
 };
 
 // Rute yang boleh diakses tanpa sesi.
-const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup', '/api/status/public']);
+const OPEN = new Set(['/api/auth/state', '/api/auth/login', '/api/auth/setup', '/api/status/public', '/api/events/host']);
+
+// Token buat script HOST (PAM SSH login, cron alert, dll -- yang jalan DI
+// LUAR container panel sama sekali, jadi gak bisa pakai sesi cookie) nitip
+// kejadian ke notification center web. Dibuat sekali, ditulis ke /state
+// (yang di host-nya kebaca di /srv/panel-state) biar script bash bisa
+// baca langsung tanpa perlu setup apa-apa lagi.
+const HOST_NOTIFY_TOKEN_FILE = path.join(STATE_DIR, 'host-notify-token.txt');
+let HOST_NOTIFY_TOKEN = '';
+try { HOST_NOTIFY_TOKEN = fsSync.readFileSync(HOST_NOTIFY_TOKEN_FILE, 'utf8').trim(); } catch {}
+if (!HOST_NOTIFY_TOKEN) {
+  HOST_NOTIFY_TOKEN = crypto.randomBytes(24).toString('base64url');
+  try { fsSync.mkdirSync(STATE_DIR, { recursive: true }); fsSync.writeFileSync(HOST_NOTIFY_TOKEN_FILE, HOST_NOTIFY_TOKEN); } catch {}
+}
 
 function sessionOf(req) {
   const t = cookieOf(req, 'sid');
@@ -1959,6 +1972,22 @@ const requestHandler = async (req, res) => {
         ev.emit('db.restored', `Dipulihkan dari <code>${b.name}</code>.`);
         if (r.code !== 0) return fail(res, r.out || 'Restore failed');
         return ok(res, { message: 'Restore complete' });
+      }
+
+      // Titipan kejadian dari script HOST (PAM SSH login, cron alert, dst) --
+      // jalan DI LUAR container ini sama sekali, jadi gak bisa pakai sesi
+      // cookie, cukup token statis yang ditulis ke file yang bisa dibaca
+      // host. Bukan pengganti notify Telegram-nya sendiri (script tetap
+      // kirim Telegram-nya sendiri, ini cuma nitip biar KELIHATAN JUGA di
+      // notification center web -- dobel notif Telegram+web itu sengaja,
+      // bukan bug).
+      if (p === '/api/events/host' && req.method === 'POST') {
+        const authz = req.headers.authorization || '';
+        if (authz.slice(7).trim() !== HOST_NOTIFY_TOKEN) return fail(res, 'Invalid token', 401);
+        const b = await readJson(req);
+        if (!ev.CATALOG[b.type]) return fail(res, 'Unknown event type', 400);
+        const rec = ev.emit(b.type, b.message || '', b.meta || {});
+        return ok(res, { emitted: !!rec });
       }
 
       // ---- Pusat kejadian ----

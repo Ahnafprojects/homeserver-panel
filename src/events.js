@@ -82,6 +82,7 @@ export const CATALOG = {
   'sec.new_device':          { c: 'security', s: 'urgent', t: 'Sign-in from a new device' },
   'sec.terminal_opened':     { c: 'security', s: 'urgent', t: 'Web terminal opened' },
   'sec.credential_changed':  { c: 'security', s: 'urgent', t: 'Password or 2FA changed' },
+  'sec.ssh_login':           { c: 'security', s: 'urgent', t: 'SSH login to host' },
   'sec.login_ok':            { c: 'security', s: 'info',   t: 'Successful sign-in' },
   'sec.firewall_changed':    { c: 'security', s: 'info',   t: 'Firewall rule changed' },
   'sec.port_opened':         { c: 'security', s: 'info',   t: 'Port opened publicly' },

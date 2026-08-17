@@ -6,6 +6,7 @@ import webpush from 'web-push';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as admin from './admin.js';
+import * as tunnel from './tunnel.js';
 
 const STATE = process.env.STATE_DIR || '/state';
 const SUBS_FILE = path.join(STATE, 'push-subs.json');
@@ -29,9 +30,16 @@ function vapidKeys() {
 
 let configured = false;
 function ensureConfigured() {
-  if (configured) return;
+  // "mailto:admin@localhost" (subjek VAPID sebelumnya) ditolak Apple Web
+  // Push (web.push.apple.com, dipakai Safari/iOS/macOS) dengan error
+  // "BadJwtToken" -- Apple validasi klaim JWT-nya lebih ketat daripada
+  // FCM (Android/Chrome), yang lolos-lolos aja walau subjeknya jelas
+  // palsu. Pakai domain beneran punya panel ini kalau ada (lewat tunnel),
+  // baru fallback ke localhost kalau belum ada domain sama sekali.
+  const domain = tunnel.baseDomain?.();
+  const subject = domain ? `mailto:admin@${domain}` : 'mailto:admin@localhost';
   const { pub, priv } = vapidKeys();
-  webpush.setVapidDetails('mailto:admin@localhost', pub, priv);
+  webpush.setVapidDetails(subject, pub, priv);
   configured = true;
 }
 
@@ -64,6 +72,11 @@ export async function sendToAll(title, body) {
       await webpush.sendNotification(s.subscription, payload);
     } catch (e) {
       if (e.statusCode === 404 || e.statusCode === 410) dead.push(s.subscription.endpoint);
+      // Selain "subscription mati" (404/410, dibersihkan di bawah), error lain
+      // (kredensial VAPID salah, JWT ditolak, dst) sebelumnya kebuang diam-diam
+      // -- kebukti nyata bikin bug BadJwtToken ke Apple gak kelihatan sama
+      // sekali sampai dicek manual. Sekarang dicatat ke log container.
+      else console.error(`[webpush] gagal kirim ke ${s.subscription.endpoint.slice(0, 60)}...: ${e.statusCode || ''} ${e.body || e.message}`);
     }
   }));
   if (dead.length) {

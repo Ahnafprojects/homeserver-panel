@@ -1012,6 +1012,56 @@ VIEWS.settings = () => {
         el('td', { style: 'color:var(--tx-3)' }, t.lastUsed ? ago(t.lastUsed) : 'belum pernah dipakai'),
         el('td', {}, del));
     }));
+    /* Web Push — notifikasi kejadian 'urgent' langsung ke browser/HP,
+       jalan bareng Telegram (lihat events.js). Perlu HTTPS (atau localhost)
+       supaya browser mengizinkan Notification/PushManager. */
+    const pushArea = el('div', { class: 'card' }, el('div', { class: 'card-b' }, 'Memuat...'));
+    async function paintPush() {
+      const supported = 'serviceWorker' in navigator && 'PushManager' in window;
+      if (!supported) {
+        pushArea.replaceChildren(el('div', { class: 'card-b', style: 'color:var(--tx-3)' },
+          'Browser ini tidak mendukung push notification.'));
+        return;
+      }
+      let subbed = false;
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const s = await reg.pushManager.getSubscription();
+        subbed = !!s;
+      } catch {}
+      const btn = el('button', { class: subbed ? 'btn danger' : 'btn pri' },
+        subbed ? 'Matikan push notification' : 'Aktifkan push notification');
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try {
+          const reg = await navigator.serviceWorker.ready;
+          if (subbed) {
+            const s = await reg.pushManager.getSubscription();
+            if (s) { await api('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: s.endpoint }) }); await s.unsubscribe(); }
+            toast('Push notification dimatikan');
+          } else {
+            const perm = await Notification.requestPermission();
+            if (perm !== 'granted') { toast('Izin notifikasi ditolak'); return; }
+            const { key } = await api('/push/vapid-key');
+            const s = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
+            await api('/push/subscribe', { method: 'POST', body: JSON.stringify({ subscription: s.toJSON() }) });
+            toast('Push notification aktif — coba trigger event urgent buat tes');
+          }
+          paintPush();
+        } catch (e) { toast(e.message); } finally { btn.disabled = false; }
+      };
+      pushArea.replaceChildren(el('div', { class: 'card-b' },
+        el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+          'Dapat notifikasi (container crash, deploy gagal, backup gagal, dll) walau tab panel ini tertutup.'),
+        btn));
+    }
+    function urlB64ToUint8(b64) {
+      const pad = '='.repeat((4 - b64.length % 4) % 4);
+      const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
+    }
+    paintPush();
+
     const newTokBtn = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Token baru</span>' });
     newTokBtn.onclick = () => {
       const label = el('input', { placeholder: 'mis. "CI deploy script"' });
@@ -1312,6 +1362,7 @@ VIEWS.settings = () => {
 
     wrap.replaceChildren(
       el('div', { class: 'sec' }, 'Two-factor authentication'), twoFA,
+      el('div', { class: 'sec' }, 'Push notification'), pushArea,
       el('div', { class: 'sec' }, 'API tokens'), tokensSection,
       ...(sshCard ? [el('div', { class: 'sec' }, 'Akses SSH dari luar'), sshCard] : []),
       el('div', { class: 'sec' }, `Users (${users.users.length})`),

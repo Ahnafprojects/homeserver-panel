@@ -13,6 +13,20 @@ self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys().then(ks =>
     Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
+self.addEventListener('push', (e) => {
+  let data = { title: 'Home Server Panel', body: '' };
+  try { data = e.data.json(); } catch { if (e.data) data.body = e.data.text(); }
+  e.waitUntil(self.registration.showNotification(data.title || 'Home Server Panel', {
+    body: data.body || '', icon: '/icon.svg', badge: '/icon.svg',
+  }));
+});
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window' }).then((cs) => {
+    if (cs.length > 0) return cs[0].focus();
+    return self.clients.openWindow('/');
+  }));
+});
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws/')) return;

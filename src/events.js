@@ -128,6 +128,8 @@ const DEDUPE_MS = 10 * 60 * 1000;
 
 let sendTelegram = null;
 export const setTelegramSender = (fn) => { sendTelegram = fn; };
+let sendPush = null;
+export const setPushSender = (fn) => { sendPush = fn; };
 
 /* Pesan kejadian ditampilkan sebagai HTML agar <b> dan <code> terbaca rapi.
    Karena sebagian isinya berasal dari luar (nama container, header IP),
@@ -158,6 +160,7 @@ export function emit(type, message = '', meta = {}) {
     if (Date.now() - last > DEDUPE_MS) {
       lastSent.set(key, Date.now());
       sendTelegram(def.t, message);
+      sendPush?.(def.t, message.replace(/<[^>]*>/g, ''));
     }
   }
   return ev;

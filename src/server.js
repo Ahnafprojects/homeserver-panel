@@ -12,6 +12,7 @@ import { docker, dockerExtra, demuxDockerStream, cpuPercent, memUsage, netStats 
 import { makeSeriesStore } from './historyStore.js';
 import * as registryCheck from './registryCheck.js';
 import * as apiTokens from './apiTokens.js';
+import * as webpush from './webpush.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -94,6 +95,7 @@ async function notify(title, body) {
 }
 
 ev.setTelegramSender((t, m) => notify(t, m));
+ev.setPushSender((t, m) => webpush.sendToAll(t, m).catch(() => {}));
 
 // ── Riwayat metrik ──────────────────────────────────────────────────────────
 // Disimpan di memori (cincin) lalu ditulis ke disk berkala, supaya grafik
@@ -786,6 +788,24 @@ const requestHandler = async (req, res) => {
         if (!removed) return fail(res, 'Token not found', 404);
         auth.audit(ses.username, 'token-cabut', m[1]);
         return ok(res);
+      }
+
+      // Web Push — dipicu bareng event 'urgent' (lihat events.js setPushSender).
+      if (p === '/api/push/vapid-key' && req.method === 'GET') {
+        return ok(res, { key: webpush.publicKey() });
+      }
+      if (p === '/api/push/subscribe' && req.method === 'POST') {
+        const b = await readJson(req);
+        webpush.subscribe(ses.username, b.subscription);
+        return ok(res);
+      }
+      if (p === '/api/push/unsubscribe' && req.method === 'POST') {
+        const b = await readJson(req);
+        webpush.unsubscribe(ses.username, b.endpoint);
+        return ok(res);
+      }
+      if (p === '/api/push/subs' && req.method === 'GET') {
+        return ok(res, { subs: webpush.listFor(ses.username) });
       }
 
       // Penjaga izin: tiap kelompok rute dipetakan ke satu halaman.

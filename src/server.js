@@ -2297,6 +2297,26 @@ const requestHandler = async (req, res) => {
         return ok(res);
       }
 
+      // Topologi jaringan -- container mana nyambung ke network mana, buat
+      // digambar sebagai graf di frontend. listNetworks() (list biasa) TIDAK
+      // ngasih anggota tiap network, jadi ambil dari sisi container
+      // (NetworkSettings.Networks tiap container sudah lengkap datanya).
+      if (p === '/api/networks/topology') {
+        const [nets, cs] = await Promise.all([docker.listNetworks(), docker.listContainers()]);
+        const nodes = cs.map((c) => ({ id: c.Id.slice(0, 12), name: (c.Names?.[0] || '').replace(/^\//, ''),
+          state: c.State, image: c.Image }));
+        const edges = [];
+        for (const c of cs) {
+          const nw = c.NetworkSettings?.Networks || {};
+          for (const [name, info] of Object.entries(nw)) {
+            edges.push({ container: c.Id.slice(0, 12), network: name, ip: info.IPAddress || null });
+          }
+        }
+        const networks = nets.map((n) => ({ name: n.Name, driver: n.Driver, scope: n.Scope,
+          internal: !!n.Internal, subnet: n.IPAM?.Config?.[0]?.Subnet || null }))
+          .filter((n) => edges.some((e) => e.network === n.name)); // buang network kosong biar graf gak berantakan
+        return ok(res, { nodes, networks, edges });
+      }
       if (p === '/api/networks') {
         const n = await docker.listNetworks();
         return ok(res, { networks: n.map(x => ({ id: x.Id.slice(0, 12), name: x.Name,

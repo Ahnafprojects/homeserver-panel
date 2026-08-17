@@ -886,7 +886,63 @@ VIEWS.resources = () => {
   }
 
   /* ── Network ── */
+  function openTopology() {
+    const box = el('div', {}, el('div', { style: 'color:var(--tx-3);font-size:12.5px' }, 'Memuat...'));
+    openDrawer('Topologi jaringan', box);
+    $('#drawer').classList.add('wide');
+    api('/networks/topology').then((t) => {
+      if (!t.networks.length) {
+        box.replaceChildren(el('div', { style: 'color:var(--tx-3);font-size:13px' },
+          'Belum ada container yang tersambung ke network mana pun (selain bawaan Docker).'));
+        return;
+      }
+      const nodeById = new Map(t.nodes.map((n) => [n.id, n]));
+      const diagrams = t.networks.map((net) => {
+        const members = t.edges.filter((e) => e.network === net.name)
+          .map((e) => ({ ...e, node: nodeById.get(e.container) })).filter((m) => m.node);
+        const W = 300, H = 240, cx = W / 2, cy = H / 2 - 10, r = 82;
+        const svgNS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNS, 'svg');
+        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+        svg.setAttribute('style', 'width:100%;max-width:300px;height:240px');
+        const mkLine = (x1, y1, x2, y2) => { const l = document.createElementNS(svgNS, 'line');
+          l.setAttribute('x1', x1); l.setAttribute('y1', y1); l.setAttribute('x2', x2); l.setAttribute('y2', y2);
+          l.setAttribute('stroke', 'var(--bd)'); l.setAttribute('stroke-width', '1.5'); return l; };
+        const mkCircle = (x, y, rad, fill) => { const c = document.createElementNS(svgNS, 'circle');
+          c.setAttribute('cx', x); c.setAttribute('cy', y); c.setAttribute('r', rad); c.setAttribute('fill', fill); return c; };
+        const mkText = (x, y, txt, size, anchor) => { const t = document.createElementNS(svgNS, 'text');
+          t.setAttribute('x', x); t.setAttribute('y', y); t.setAttribute('font-size', size);
+          t.setAttribute('text-anchor', anchor || 'middle'); t.setAttribute('fill', 'var(--tx-2)'); t.textContent = txt; return t; };
+        members.forEach((m, i) => {
+          const ang = (2 * Math.PI * i) / Math.max(members.length, 1) - Math.PI / 2;
+          const x = cx + r * Math.cos(ang), y = cy + r * Math.sin(ang);
+          svg.append(mkLine(cx, cy, x, y));
+        });
+        svg.append(mkCircle(cx, cy, 26, 'var(--pri)'));
+        svg.append(mkText(cx, cy + 4, net.driver, 10, 'middle'));
+        members.forEach((m, i) => {
+          const ang = (2 * Math.PI * i) / Math.max(members.length, 1) - Math.PI / 2;
+          const x = cx + r * Math.cos(ang), y = cy + r * Math.sin(ang);
+          const dotColor = m.node.state === 'running' ? 'var(--good)' : 'var(--tx-3)';
+          svg.append(mkCircle(x, y, 16, dotColor));
+          svg.append(mkText(x, y + 32, m.node.name.length > 14 ? m.node.name.slice(0, 13) + '…' : m.node.name, 10));
+          if (m.ip) svg.append(mkText(x, y + 44, m.ip, 8.5));
+        });
+        return el('div', { class: 'card', style: 'padding:10px;text-align:center' },
+          el('div', { style: 'font-size:12.5px;font-weight:600;margin-bottom:4px' },
+            net.name + (net.internal ? ' (internal)' : ''), net.subnet ? el('div', { style: 'font-size:10.5px;color:var(--tx-3);font-weight:400' }, net.subnet) : ''),
+          svg);
+      });
+      box.replaceChildren(
+        el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:14px' },
+          'Titik biru di tengah = network, titik hijau = container jalan, abu-abu = container mati.'),
+        el('div', { style: 'display:flex;flex-wrap:wrap;gap:12px;justify-content:center' }, ...diagrams));
+    }).catch((e) => box.replaceChildren(el('div', { style: 'color:var(--bad)' }, e.message)));
+  }
+
   function renderNetworks(body) {
+    const topoBtn = el('button', { class: 'btn', html: ic('layers', 13) + '<span>Topologi</span>' });
+    topoBtn.onclick = openTopology;
     const add = el('button', { class: 'btn pri', html: ic('plus', 13) + '<span>Network baru</span>' });
     add.onclick = () => {
       const n = el('input', { placeholder: 'apps' });
@@ -937,7 +993,7 @@ VIEWS.resources = () => {
     body.replaceChildren(
       el('div', { class: 'row', style: 'margin-bottom:12px' },
         el('span', { class: 'pill' }, `${data.networks.length} jaringan`),
-        el('span', { class: 'sp' }), add),
+        el('span', { class: 'sp' }), topoBtn, add),
       el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
         el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Network'),
           el('th', {}, 'Driver'), el('th', {}, 'Containers'), el('th', {}, ''))), tb))));

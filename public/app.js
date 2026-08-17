@@ -193,6 +193,7 @@ const PAGES = [
   { g: 'System', items: [
     { id: 'terminal', n: 'Terminal', i: 'term' },
     { id: 'resources', n: 'Resources', i: 'layers' },
+    { id: 'servers', n: 'Servers', i: 'net' },
     { id: 'system', n: 'System', i: 'cog' },
     { id: 'settings', n: 'Settings', i: 'cog' },
   ]},

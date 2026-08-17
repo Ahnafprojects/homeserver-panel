@@ -16,6 +16,7 @@ import * as webpush from './webpush.js';
 import * as vulnScan from './vulnScan.js';
 import * as mailer from './mailer.js';
 import * as logRetention from './logRetention.js';
+import * as hosts from './hosts.js';
 import * as drSnapshot from './drSnapshot.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
@@ -1109,6 +1110,7 @@ const requestHandler = async (req, res) => {
         [/^\/api\/jobs/, ['jobs']],
         [/^\/api\/(secrets|backups|gdrive|dr)/, ['vault']],
         [/^\/api\/(images|volumes|networks|prune|disk-analysis|logs\/retention)/, ['resources']],
+        [/^\/api\/hosts/, ['servers']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
       ];
@@ -2594,6 +2596,34 @@ const requestHandler = async (req, res) => {
         const r = await logRetention.runCleanup(logRetention.retentionDays());
         auth.audit(ses.username, 'log-retention-manual', JSON.stringify(r));
         return ok(res, r);
+      }
+
+      // ---- Multi-server: kelola Docker host LAIN lewat SSH ----
+      if (p === '/api/hosts' && req.method === 'GET') {
+        return ok(res, { hosts: hosts.listHosts() });
+      }
+      if (p === '/api/hosts' && req.method === 'POST') {
+        const b = await readJson(req);
+        const rec = hosts.addHost(b);
+        auth.audit(ses.username, 'host-tambah', `${rec.name} ${rec.url}`);
+        return ok(res, rec);
+      }
+      if ((m = p.match(/^\/api\/hosts\/([^/]+)$/)) && req.method === 'DELETE') {
+        const removed = hosts.removeHost(m[1]);
+        if (!removed) return fail(res, 'Host not found', 404);
+        auth.audit(ses.username, 'host-hapus', m[1]);
+        return ok(res);
+      }
+      if ((m = p.match(/^\/api\/hosts\/([^/]+)\/test$/)) && req.method === 'POST') {
+        return ok(res, await hosts.testHost(m[1]));
+      }
+      if ((m = p.match(/^\/api\/hosts\/([^/]+)\/containers$/)) && req.method === 'GET') {
+        try { return ok(res, { containers: await hosts.hostContainers(m[1]) }); }
+        catch (e) { return fail(res, e.message, 502); }
+      }
+      if ((m = p.match(/^\/api\/hosts\/([^/]+)\/stats$/)) && req.method === 'GET') {
+        try { return ok(res, await hosts.hostStats(m[1])); }
+        catch (e) { return fail(res, e.message, 502); }
       }
 
       // ---- Disk analyzer: apa yang paling makan disk, host + docker ----

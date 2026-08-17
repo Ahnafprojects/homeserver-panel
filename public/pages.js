@@ -739,6 +739,114 @@ VIEWS.terminal = () => {
   }
 };
 
+/* ═══════════ Servers: kelola Docker host LAIN lewat SSH ═══════════ */
+VIEWS.servers = () => {
+  const wrap = el('div');
+  mount(wrap);
+  addAction('Tambah host', 'plus', () => form(), 'btn pri');
+  addAction('Refresh', 'refresh', () => load());
+  liveBadge(30);
+
+  function form() {
+    const name = el('input', { placeholder: 'mis. "Server backup"' });
+    const url = el('input', { placeholder: 'ssh://user@192.168.1.20' });
+    const go = el('button', { class: 'btn pri' }, 'Tambah & tes koneksi');
+    go.onclick = async () => {
+      if (!name.value.trim() || !url.value.trim()) return toast('Nama dan URL wajib diisi');
+      go.disabled = true;
+      try {
+        const rec = await api('/hosts', { method: 'POST', body: JSON.stringify({ name: name.value.trim(), url: url.value.trim() }) });
+        closeDrawer(); toast('Host ditambahkan, mengetes koneksi...'); load();
+        try {
+          const t = await api(`/hosts/${rec.id}/test`, { method: 'POST' });
+          toast(t.ok ? `Tersambung — Docker ${t.version} (${t.os})` : `Gagal konek: ${t.error}`);
+        } catch (e) { toast(e.message); }
+        load();
+      } catch (e) { toast(e.message); } finally { go.disabled = false; }
+    };
+    openDrawer('Tambah Docker host', el('div', {},
+      el('div', { class: 'field' }, el('label', {}, 'Nama'), name),
+      el('div', { class: 'field' }, el('label', {}, 'URL koneksi (SSH)'), url),
+      el('div', { style: 'font-size:11.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+        'Pakai SSH (ssh://user@host), bukan expose Docker API lewat TCP tanpa autentikasi -- '
+        + 'lebih aman. Laptop ini (user yang menjalankan panel) harus sudah bisa SSH ke host itu '
+        + 'tanpa password (kunci SSH sudah didaftarkan), dan Docker CLI + akses docker.sock harus '
+        + 'ada di sisi host tujuan.'),
+      el('div', { class: 'row' }, go)));
+  }
+
+  async function viewHost(h) {
+    const body = el('div', {}, el('div', { style: 'color:var(--tx-3);font-size:12.5px' }, 'Memuat...'));
+    openDrawer(h.name, body);
+    try {
+      const [stats, containers] = await Promise.all([
+        api(`/hosts/${h.id}/stats`).catch(() => null),
+        api(`/hosts/${h.id}/containers`).catch(() => ({ containers: [] })),
+      ]);
+      const tb = el('tbody', {}, ...containers.containers.map((c) => el('tr', {},
+        el('td', {}, c.Names), el('td', { class: 'mono', style: 'color:var(--tx-3);font-size:10.5px' }, c.Image),
+        el('td', {}, el('span', { class: 'pill ' + (/up/i.test(c.Status) ? 'ok' : '') }, c.Status)))));
+      body.replaceChildren(
+        stats ? el('div', { class: 'stats', style: 'margin-bottom:14px' },
+          el('div', { class: 'stat' }, el('div', { class: 'k' }, 'CONTAINER'),
+            el('div', { class: 'v' }, `${stats.containersRunning ?? '—'}/${stats.containers ?? '—'}`)),
+          el('div', { class: 'stat' }, el('div', { class: 'k' }, 'IMAGE'), el('div', { class: 'v' }, stats.images ?? '—')),
+          el('div', { class: 'stat' }, el('div', { class: 'k' }, 'CPU'), el('div', { class: 'v' }, (stats.ncpu ?? '—') + ' core')),
+          el('div', { class: 'stat' }, el('div', { class: 'k' }, 'RAM'), el('div', { class: 'v' }, stats.memTotal ? bytes(stats.memTotal) : '—')),
+          el('div', { class: 'stat' }, el('div', { class: 'k' }, 'DOCKER'), el('div', { class: 'v', style: 'font-size:14px' }, stats.serverVersion || '—'))) : '',
+        el('div', { class: 'sec' }, `Container (${containers.containers.length})`),
+        containers.containers.length
+          ? el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
+              el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Nama'), el('th', {}, 'Image'), el('th', {}, 'Status'))), tb)))
+          : el('div', { class: 'card' }, el('div', { class: 'empty' }, 'Tidak ada container, atau host tidak bisa dihubungi.')));
+    } catch (e) { body.replaceChildren(el('div', { style: 'color:var(--bad)' }, e.message)); }
+  }
+
+  async function load() {
+    try {
+      const { hosts } = await api('/hosts');
+      if (!hosts.length) {
+        wrap.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'empty',
+          html: ic('net', 30, 1.3) + '<div>Belum ada server lain terhubung</div>'
+            + '<div style="font-size:11.5px;margin-top:6px">Panel ini otomatis kelola laptop/server tempatnya jalan sendiri -- tambah host lain lewat SSH buat kelola lebih dari satu server dari sini.</div>' })));
+        return;
+      }
+      const tb = el('tbody', {}, ...hosts.map((h) => {
+        const testBtn = el('button', { class: 'ib', title: 'Tes koneksi', html: ic('refresh', 14) });
+        const statusEl = el('span', { class: 'pill', style: 'font-size:10.5px' }, 'belum dites');
+        testBtn.onclick = async (e) => {
+          e.stopPropagation(); testBtn.disabled = true;
+          try {
+            const t = await api(`/hosts/${h.id}/test`, { method: 'POST' });
+            statusEl.className = 'pill ' + (t.ok ? 'ok' : 'bad');
+            statusEl.textContent = t.ok ? `online — Docker ${t.version}` : 'offline: ' + (t.error || '').slice(0, 60);
+          } catch (e2) { statusEl.className = 'pill bad'; statusEl.textContent = e2.message; }
+          finally { testBtn.disabled = false; }
+        };
+        const del = el('button', { class: 'ib', title: 'Hapus', html: ic('trash', 14) });
+        del.onclick = async (e) => {
+          e.stopPropagation();
+          if (!confirm(`Hapus host "${h.name}"? (koneksi doang, servernya sendiri tidak diapa-apain)`)) return;
+          await api('/hosts/' + h.id, { method: 'DELETE' }); toast('Host dihapus'); load();
+        };
+        const tr = el('tr', { style: 'cursor:pointer' },
+          el('td', {}, el('div', { style: 'font-weight:500' }, h.name),
+            el('div', { class: 'mono', style: 'font-size:10.5px;color:var(--tx-3)' }, h.url)),
+          el('td', {}, statusEl),
+          el('td', {}, el('div', { class: 'row', style: 'justify-content:flex-end' }, testBtn, del)));
+        tr.onclick = () => viewHost(h);
+        return tr;
+      }));
+      wrap.replaceChildren(
+        el('div', { style: 'font-size:12px;color:var(--tx-3);margin-bottom:12px;line-height:1.6' },
+          'Kelola Docker host lain (server kedua, dst) dari sini lewat SSH -- laptop tempat panel ini jalan tetap jadi pusatnya, host lain cuma "ditambahkan" buat dilihat/dipantau.'),
+        el('div', { class: 'card' }, el('div', { class: 'tbl-wrap' },
+          el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Host'), el('th', {}, 'Status'), el('th', {}, ''))), tb))));
+    } catch (e) { wrap.replaceChildren(el('div', { class: 'empty' }, e.message)); }
+  }
+  load();
+};
+
 /* ═══════════ Sumber daya Docker (sub-tab) ═══════════ */
 VIEWS.resources = () => {
   let data = { images: [], volumes: [], networks: [], containers: [] };

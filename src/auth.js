@@ -123,6 +123,7 @@ export const PAGES = {
   vault: 'Vault & Backups',
   terminal: 'Terminal',
   resources: 'Resources',
+  servers: 'Servers',
   system: 'System',
   settings: 'Settings',
 };

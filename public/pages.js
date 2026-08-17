@@ -1000,6 +1000,33 @@ VIEWS.resources = () => {
   }
 
   /* ── Cleanup ── */
+  function logRetentionArea() {
+    const box = el('div', { class: 'card' }, el('div', { class: 'card-b' }, 'Memuat...'));
+    async function paint() {
+      let r;
+      try { r = await api('/logs/retention'); } catch { r = { last: null, days: 3 }; }
+      const runBtn = el('button', { class: 'btn' }, 'Bersihkan sekarang');
+      runBtn.onclick = async () => {
+        runBtn.disabled = true; runBtn.textContent = 'Membersihkan…';
+        try {
+          const res = await api('/logs/retention/run', { method: 'POST' });
+          toast(`Selesai — ${bytes(res.bytesFreed)} dibebaskan dari ${res.filesTouched} container`);
+          paint();
+        } catch (e) { toast(e.message); }
+        finally { runBtn.disabled = false; runBtn.textContent = 'Bersihkan sekarang'; }
+      };
+      box.replaceChildren(el('div', { class: 'card-b' },
+        el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:10px;line-height:1.6' },
+          `Log setiap container otomatis dipotong tiap hari, cuma nyisain ${r.days} hari terakhir — dijalankan sendiri di background, gak perlu dipencet manual. `
+          + (r.last
+            ? `Terakhir jalan ${ago(r.last.t)}: ${bytes(r.last.bytesFreed)} dibebaskan dari ${r.last.filesTouched} container (${r.last.linesDropped} baris log lama dibuang).`
+            : 'Belum pernah jalan.')),
+        runBtn));
+    }
+    paint();
+    return box;
+  }
+
   function renderCleanup(body) {
     const used = new Set(data.containers.map(c => c.image));
     const imgIdle = data.images.filter(i => !i.tags.length || !i.tags.some(t => used.has(t)));
@@ -1050,7 +1077,8 @@ VIEWS.resources = () => {
           'CAREFUL: volumes hold app data. Make sure you have a backup.', false),
         optRow('buildCache', 'Build cache',
           'Layer sisa "docker build" (RUN npm ci, dst) — numpuk tiap rebuild, dibersihkan otomatis tiap minggu juga.'),
-        el('div', { class: 'row', style: 'margin-top:12px' }, go))));
+        el('div', { class: 'row', style: 'margin-top:12px' }, go))),
+      el('div', { class: 'sec' }, 'Retensi log container'), logRetentionArea());
   }
 
   async function load() {

@@ -15,6 +15,7 @@ import * as apiTokens from './apiTokens.js';
 import * as webpush from './webpush.js';
 import * as vulnScan from './vulnScan.js';
 import * as mailer from './mailer.js';
+import * as logRetention from './logRetention.js';
 import * as auth from './auth.js';
 import * as stacks from './stacks.js';
 import * as autodeploy from './autodeploy.js';
@@ -273,6 +274,21 @@ async function autoPruneBuildCache() {
 }
 autoPruneBuildCache();
 setInterval(autoPruneBuildCache, 24 * 3600 * 1000); // dicek tiap hari, jalan tiap 7 hari sekali
+
+// Log container dibiarin numpuk selamanya bisa habisin disk pelan-pelan --
+// potong otomatis tiap hari, cuma nyisain N hari terakhir (default 3).
+async function autoCleanLogs() {
+  try {
+    const r = await logRetention.runCleanup(logRetention.retentionDays());
+    if (r.bytesFreed > 0) {
+      ev.emit('container.buildcache_cleaned',
+        `Log container lebih dari ${r.days} hari dibersihkan otomatis — `
+        + `${(r.bytesFreed / 1e6).toFixed(1)} MB dibebaskan dari ${r.filesTouched} container.`);
+    }
+  } catch {}
+}
+autoCleanLogs();
+setInterval(autoCleanLogs, 24 * 3600 * 1000);
 
 // Backup harian (HDD + Google Drive) gagal SEKALI itu bisa cuma internet
 // putus semalam — tapi gagal 3x BERTURUT-TURUT itu tanda ada yang beneran
@@ -897,7 +913,7 @@ const requestHandler = async (req, res) => {
         [/^\/api\/(sites|tunnel)/, ['domains']],
         [/^\/api\/jobs/, ['jobs']],
         [/^\/api\/(secrets|backups|gdrive)/, ['vault']],
-        [/^\/api\/(images|volumes|networks|prune|disk-analysis)/, ['resources']],
+        [/^\/api\/(images|volumes|networks|prune|disk-analysis|logs\/retention)/, ['resources']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
       ];
@@ -2266,6 +2282,17 @@ const requestHandler = async (req, res) => {
         if (b.containers) r.containers = await dockerExtra.pruneContainers();
         if (b.buildCache) r.buildCache = await dockerExtra.pruneBuildCache();
         auth.audit(ses.username, 'prune', JSON.stringify(b));
+        return ok(res, r);
+      }
+
+      // Status pembersihan log otomatis (retensi N hari) -- bisa dipicu
+      // manual juga lewat tombol "Bersihkan sekarang" di halaman Cleanup.
+      if (p === '/api/logs/retention' && req.method === 'GET') {
+        return ok(res, { last: logRetention.lastRun(), days: logRetention.retentionDays() });
+      }
+      if (p === '/api/logs/retention/run' && req.method === 'POST') {
+        const r = await logRetention.runCleanup(logRetention.retentionDays());
+        auth.audit(ses.username, 'log-retention-manual', JSON.stringify(r));
         return ok(res, r);
       }
 

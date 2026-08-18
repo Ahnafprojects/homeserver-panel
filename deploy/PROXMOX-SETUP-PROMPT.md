@@ -23,6 +23,16 @@ shrinking later is a config edit, not a rebuild.
 **Owner.** Speaks Indonesian informally. Explain destructive steps before
 running them. Keep responses short.
 
+**This is a rebuild, not a first install.** The owner already had this panel
+fully working before wiping the machine to install Proxmox: deployed at the
+domain **`ahnaf.cloud`**, reachable over the web through a **Cloudflare
+Tunnel**, with **SSH also routed through the same tunnel** (no port-forwarding,
+no public IP needed), **Telegram alerts** and **in-panel website
+notifications** both working, and **two backup destinations** — an external
+HDD and **Google Drive**. All of that was lost when the disk was wiped for
+Proxmox. Section 4.8 below rebuilds every one of these; do not treat them as
+optional extras, they are restoring a working setup, not adding new scope.
+
 ---
 
 ## 2. Decisions already made — do not relitigate
@@ -239,6 +249,37 @@ Datacenter → Backup → Add
 
 Verify the lid setting by asking the owner to close the laptop lid for a
 minute and confirm the panel is still reachable.
+
+### 4.8 Restore what was already working before the wipe
+
+The panel's own code already implements all of this — read `src/events.js`
+(notifications, Telegram routing), `src/proxy.js` (Caddyfile + certs),
+`src/admin.js` (backup/restore) before configuring anything, rather than
+guessing. Only the owner-specific facts below aren't in the code and need to
+be supplied by hand:
+
+- **Domain:** `ahnaf.cloud`. Point it at this box the same way it was set up
+  before — through **Cloudflare Tunnel**, not a port-forward. Panel → Domains
+  page once the tunnel exists.
+- **SSH also goes through the same Cloudflare Tunnel**, not a separate
+  relay or open port. Configure `cloudflared` with both an HTTP hostname (for
+  the panel/apps) and a TCP hostname (for SSH) under the one tunnel.
+- **Notifications:** enable both channels in the panel — Telegram bot (needs
+  the owner to message their bot first, Telegram blocks bots from speaking
+  first) and the in-panel/website notification feed. Both already exist in
+  `events.js`; just needs the bot token and chat ID re-entered in Vault.
+- **Backups, two destinations, both must be restored:**
+  1. External HDD — same as the `setup-backup.sh` / Vault & Backups flow
+     from before.
+  2. **Google Drive** — this one is not just a mounted drive; check how it
+     was implemented previously (rclone remote, or a service-account API
+     call from `admin.js`) and recreate that same mechanism, not a different
+     one. If unclear from the code, ask the owner how the Google Drive leg
+     was authenticated before, since credentials are never stored in the
+     repo and were lost in the wipe.
+
+None of this is new scope — it's restoring a configuration that was already
+proven working. Do not redesign it; just get it running again.
 
 ---
 

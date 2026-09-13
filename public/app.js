@@ -507,58 +507,65 @@ VIEWS.overview = () => {
       for (const a of r.accounts || []) {
         (accByProvider[a.provider] ||= []).push(a);
       }
+      const providerHead = el('tr', {},
+        el('th', { style: 'text-align:left' }, 'Provider'),
+        el('th', { style: 'text-align:right' }, 'Req'),
+        el('th', { style: 'text-align:right' }, 'Prompt tok'),
+        el('th', { style: 'text-align:right' }, 'Compl tok'),
+        el('th', { style: 'text-align:right' }, 'Cached tok'),
+        el('th', { style: 'text-align:right' }, 'Cost'));
+      const providerRows = Object.entries(r.byProvider || {}).map(([name, v]) => el('tr', {},
+        el('td', {}, name),
+        el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
+        el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`)));
       const providerCard = el('div', { class: 'card' },
         el('div', { class: 'card-h' }, el('h3', {}, 'Total usage (semua akun & provider)')),
         el('div', { class: 'card-b' },
           el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:8px' },
             `${fmtNum(r.totals.requests)} request · $${(r.totals.cost || 0).toFixed(4)} total cost`),
           el('table', { class: 'mono', style: 'width:100%;font-size:12px' },
-            el('thead', {}, el('tr', {},
-              el('th', { style: 'text-align:left' }, 'Provider'),
-              el('th', { style: 'text-align:right' }, 'Req'),
-              el('th', { style: 'text-align:right' }, 'Prompt tok'),
-              el('th', { style: 'text-align:right' }, 'Compl tok'),
-              el('th', { style: 'text-align:right' }, 'Cached tok'),
-              el('th', { style: 'text-align:right' }, 'Cost'))),
-            el('tbody', {}, ...Object.entries(r.byProvider || {}).map(([name, v]) => el('tr', {},
-              el('td', {}, name),
-              el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
-              el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`)))))));
+            el('thead', {}, providerHead),
+            el('tbody', {}, ...providerRows))));
 
+      const modelHead = el('tr', {},
+        el('th', { style: 'text-align:left' }, 'Model'),
+        el('th', { style: 'text-align:right' }, 'Req'),
+        el('th', { style: 'text-align:right' }, 'Prompt tok'),
+        el('th', { style: 'text-align:right' }, 'Compl tok'),
+        el('th', { style: 'text-align:right' }, 'Cached tok'),
+        el('th', { style: 'text-align:right' }, 'Cost'),
+        el('th', { style: 'text-align:right' }, 'Terakhir dipakai'));
+      const modelRows = (r.byModel || []).map((v) => el('tr', {},
+        el('td', {}, v.label),
+        el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
+        el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`),
+        el('td', { style: 'text-align:right;color:var(--tx-3)' },
+          v.lastUsed ? new Date(v.lastUsed).toLocaleString('id-ID') : '—')));
       const modelCard = el('div', { class: 'card' },
         el('div', { class: 'card-h' }, el('h3', {}, 'Per model (semua akun digabung)')),
         el('div', { class: 'card-b' },
           el('table', { class: 'mono', style: 'width:100%;font-size:12px' },
-            el('thead', {}, el('tr', {},
-              el('th', { style: 'text-align:left' }, 'Model'),
-              el('th', { style: 'text-align:right' }, 'Req'),
-              el('th', { style: 'text-align:right' }, 'Prompt tok'),
-              el('th', { style: 'text-align:right' }, 'Compl tok'),
-              el('th', { style: 'text-align:right' }, 'Cached tok'),
-              el('th', { style: 'text-align:right' }, 'Cost'),
-              el('th', { style: 'text-align:right' }, 'Terakhir dipakai'))),
-            el('tbody', {}, ...(r.byModel || []).map((v) => el('tr', {},
-              el('td', {}, v.label),
-              el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
-              el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
-              el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`),
-              el('td', { style: 'text-align:right;color:var(--tx-3)' },
-                v.lastUsed ? new Date(v.lastUsed).toLocaleString('id-ID') : '—'))))))));
+            el('thead', {}, modelHead),
+            el('tbody', {}, ...modelRows))));
 
+      const accountGroups = Object.entries(accByProvider).map(([prov, list]) => {
+        const rows = list.map((a) => el('div', { class: 'row', style: 'font-size:12px;padding:3px 0' },
+          el('span', {}, a.name),
+          el('span', { class: 'sp' }),
+          el('span', { class: a.isActive ? 'pill' : 'pill bad' }, a.isActive ? 'aktif' : 'nonaktif')));
+        return el('div', { style: 'margin-bottom:10px' },
+          el('div', { style: 'font-size:12px;font-weight:600;margin-bottom:4px' }, prov),
+          ...rows);
+      });
       const accountsCard = el('div', { class: 'card' },
         el('div', { class: 'card-h' }, el('h3', {}, 'Akun per provider')),
-        el('div', { class: 'card-b' }, ...Object.entries(accByProvider).map(([prov, list]) =>
-          el('div', { style: 'margin-bottom:10px' },
-            el('div', { style: 'font-size:12px;font-weight:600;margin-bottom:4px' }, prov),
-            ...list.map((a) => el('div', { class: 'row', style: 'font-size:12px;padding:3px 0' },
-              el('span', {}, a.name),
-              el('span', { class: 'sp' }),
-              el('span', { class: a.isActive ? 'pill' : 'pill bad' }, a.isActive ? 'aktif' : 'nonaktif'))))))));
+        el('div', { class: 'card-b' }, ...accountGroups));
 
       aiUsageArea.replaceChildren(providerCard, modelCard, accountsCard);
     } catch (e) {

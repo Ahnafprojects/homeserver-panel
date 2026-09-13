@@ -33,6 +33,7 @@ import * as dbapi from './dbapi.js';
 import { WebSocketServer } from 'ws';
 import * as sys from './system.js';
 import * as pty from 'node-pty';
+import * as aiUsage from './aiUsage.js';
 
 // Dipakai khusus untuk terminal web (/ws/term). Implementasi WS tulisan sendiri
 // (ws.js) di-drop untuk endpoint ini karena ada bug framing yang tidak
@@ -1217,6 +1218,17 @@ const requestHandler = async (req, res) => {
           usedNow: { mem: usedMemNow, cpu: usedCpuNow },
           containers: perContainer.sort((a, b) => (b.memLimit || 0) - (a.memLimit || 0)),
         });
+      }
+
+      // Ringkasan usage 9Router per akun & per model — dashboard 9Router
+      // sendiri (ai.ahnaf.cloud) cuma nampilin agregat Monthly/Bonus Pack
+      // tanpa rincian model, jadi ditarik ulang dari API internalnya di sini.
+      if (p === '/api/ai-usage') {
+        try {
+          return ok(res, await aiUsage.summary());
+        } catch (e) {
+          return fail(res, e, 502);
+        }
       }
 
       // Global search (Cmd/Ctrl+K) — cari lintas stacks/containers/database/

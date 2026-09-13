@@ -45,6 +45,12 @@ async function call(path, { method = 'GET', body, retry = true } = {}) {
 // didukung (mis. codebuddy-intl) — dipakai cuma buat tes real inference.
 const FALLBACK_MODEL = {
   'codebuddy-intl': 'kimi-k2.5',
+  antigravity: 'gemini-3-flash',
+  'gemini-cli': 'gemini-3-flash-preview',
+  'grok-cli': 'grok-4.6',
+  xai: 'grok-4',
+  github: 'gpt-4o-mini',
+  codex: 'gpt-5.6-terra',
 };
 const GATEWAY_KEY = () => admin.getSecret('NINEROUTER_API_KEY') || process.env.NINEROUTER_API_KEY || '';
 
@@ -124,16 +130,56 @@ export async function testConnection(connId) {
 // Cek kesehatan SEMUA koneksi (satu per satu, terisolasi) — dipakai job
 // alert berkala. Ini beneran manggil inference (bukan cuma test token),
 // jadi jangan dipanggil terlalu sering (default tiap 30 menit dari server.js).
+//
+// PENTING: status isActive ASLI tiap koneksi di-snapshot SEKALI di awal dan
+// dikembalikan SEKALI di akhir (bukan toggle-restore berulang per koneksi) —
+// supaya nggak ada race waktu banyak koneksi provider yang sama dites
+// beruntun (percobaan pertama sempat bikin 8 koneksi ketinggalan nonaktif
+// karena restore-per-langkah saling tabrakan).
 export async function healthCheckAll() {
+  const key = GATEWAY_KEY();
+  if (!key) throw new Error('NINEROUTER_API_KEY belum diset di vault');
   const items = await rawConnections();
+  const original = new Map(items.map((c) => [c.id, c.isActive]));
   const results = [];
-  for (const c of items) {
-    try {
-      const r = await testConnection(c.id);
-      results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ...r });
-    } catch (e) {
-      results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: false, error: e.message });
+
+  try {
+    for (const c of items) {
+      const siblings = items.filter((s) => s.provider === c.provider && s.id !== c.id);
+      try {
+        const model = await pickTestModel(c.id, c.provider);
+        if (!model) {
+          results.push({ id: c.id, provider: c.provider, name: c.name || c.email,
+            ok: false, error: 'Tidak ada model yang bisa dipakai buat tes provider ini' });
+          continue;
+        }
+        await Promise.all(siblings.map((s) => setActive(s.id, false)));
+        await setActive(c.id, true);
+        const r = await fetch(`${BASE}/v1/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: `${c.provider}/${model}`,
+            messages: [{ role: 'user', content: 'hi' }], max_tokens: 5 }),
+        });
+        const text = await r.text();
+        if (r.ok) {
+          results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: true, model });
+        } else {
+          let msg = text;
+          try { msg = JSON.parse(text)?.error?.message || text; } catch {}
+          results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: false, model, error: msg.slice(0, 300) });
+        }
+        // Kembalikan sibling provider ini segera (bukan tunggu akhir semua)
+        // supaya provider lain yang jaraknya jauh di daftar nggak lama-lama nonaktif.
+        await Promise.all(siblings.map((s) => setActive(s.id, original.get(s.id))));
+      } catch (e) {
+        results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: false, error: e.message });
+      }
     }
+  } finally {
+    // Jaring pengaman terakhir: paksa semua koneksi balik ke status asli,
+    // apa pun yang terjadi di tengah jalan (error, timeout, dst).
+    await Promise.all(items.map((c) => setActive(c.id, original.get(c.id)).catch(() => {})));
   }
   return { results, checkedAt: new Date().toISOString() };
 }

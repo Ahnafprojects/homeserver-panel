@@ -85,6 +85,35 @@ export async function setActive(connId, isActive) {
   return call(`/api/providers/${connId}`, { method: 'PUT', body: { isActive } });
 }
 
+// 9Router keliatannya nyimpen daftar koneksi dengan pola read-modify-write
+// yang nggak selalu atomic -- kejadian nyata: nembak PUT isActive beruntun
+// (bahkan sekuensial dengan await) ke provider yang sama sesekali bikin
+// SATU DUA koneksi balik ke false lagi walau responsnya 200 OK. Makanya toggle
+// di file ini sekuensial DAN diverifikasi ulang -- kalau ada yang meleset,
+// di-retry beberapa kali sampai match.
+async function setActiveSeq(list, valueFn) {
+  for (const item of list) {
+    await setActive(item.id, typeof valueFn === 'function' ? valueFn(item) : valueFn);
+  }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Set banyak koneksi ke status tertentu, lalu VERIFIKASI ulang dari API dan
+// retry yang meleset (sampai `retries` kali). Dipakai buat langkah restore
+// yang penting-penting-harus-berhasil (bukan buat toggle sementara pas tes).
+async function setActiveVerified(targets, retries = 3) {
+  let pending = targets; // [{id, want}]
+  for (let attempt = 0; attempt < retries && pending.length; attempt++) {
+    for (const t of pending) await setActive(t.id, t.want);
+    await sleep(400);
+    const live = await rawConnections();
+    const liveMap = new Map(live.map((c) => [c.id, c.isActive]));
+    pending = pending.filter((t) => liveMap.get(t.id) !== t.want);
+  }
+  return pending; // sisa yang masih meleset setelah semua percobaan
+}
+
 export async function deleteConnection(connId) {
   return call(`/api/providers/${connId}`, { method: 'DELETE' });
 }
@@ -105,7 +134,7 @@ export async function testConnection(connId) {
   const model = await pickTestModel(connId, conn.provider);
   if (!model) return { ok: false, error: 'Tidak ada model yang bisa dipakai buat tes provider ini' };
 
-  await Promise.all(siblings.map((s) => setActive(s.id, false)));
+  await setActiveSeq(siblings, false);
   if (!conn.isActive) await setActive(connId, true);
   try {
     const r = await fetch(`${BASE}/v1/chat/completions`, {
@@ -122,7 +151,7 @@ export async function testConnection(connId) {
     try { msg = JSON.parse(text)?.error?.message || text; } catch {}
     return { ok: false, model, error: msg.slice(0, 300) };
   } finally {
-    await Promise.all(siblings.map((s) => setActive(s.id, true)));
+    await setActiveSeq(siblings, true);
     if (!conn.isActive) await setActive(connId, false);
   }
 }
@@ -153,7 +182,7 @@ export async function healthCheckAll() {
             ok: false, error: 'Tidak ada model yang bisa dipakai buat tes provider ini' });
           continue;
         }
-        await Promise.all(siblings.map((s) => setActive(s.id, false)));
+        await setActiveSeq(siblings, false);
         await setActive(c.id, true);
         const r = await fetch(`${BASE}/v1/chat/completions`, {
           method: 'POST',
@@ -171,15 +200,22 @@ export async function healthCheckAll() {
         }
         // Kembalikan sibling provider ini segera (bukan tunggu akhir semua)
         // supaya provider lain yang jaraknya jauh di daftar nggak lama-lama nonaktif.
-        await Promise.all(siblings.map((s) => setActive(s.id, original.get(s.id))));
+        await setActiveSeq(siblings, (s) => original.get(s.id));
       } catch (e) {
         results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: false, error: e.message });
+        await setActiveSeq(siblings, (s) => original.get(s.id)).catch(() => {});
       }
     }
   } finally {
     // Jaring pengaman terakhir: paksa semua koneksi balik ke status asli,
-    // apa pun yang terjadi di tengah jalan (error, timeout, dst).
-    await Promise.all(items.map((c) => setActive(c.id, original.get(c.id)).catch(() => {})));
+    // apa pun yang terjadi di tengah jalan (error, timeout, dst) -- dan
+    // DIVERIFIKASI ulang + retry, karena 9Router kadang "kehilangan" satu-dua
+    // update walau responsnya 200 OK (bug di sisi mereka, bukan di sini).
+    const targets = items.map((c) => ({ id: c.id, want: original.get(c.id) }));
+    const stillWrong = await setActiveVerified(targets).catch(() => targets);
+    if (stillWrong.length) {
+      console.log('[ai-health] gagal restore isActive buat:', stillWrong.map((t) => t.id).join(', '));
+    }
   }
   return { results, checkedAt: new Date().toISOString() };
 }

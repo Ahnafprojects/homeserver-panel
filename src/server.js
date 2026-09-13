@@ -196,6 +196,31 @@ async function collect() {
 }
 setInterval(collect, 5000);
 collect();
+
+// Cek kesehatan tiap koneksi 9Router tiap 30 menit lewat inference beneran
+// (bukan cuma cek token) — kasus nyata: token Antigravity/Gemini CLI bisa
+// "valid" tapi tetap 403 pas dipakai (project belum ke-provision di sisi
+// Google). Alert cuma nyala pas transisi ok->gagal, biar nggak spam tiap
+// siklus kalau memang lagi down terus.
+const AI_ALERT_STATE = {};
+async function checkAiProviders() {
+  try {
+    const { results } = await aiUsage.healthCheckAll();
+    for (const r of results) {
+      const key = `ai:${r.id}`;
+      const bad = !r.ok;
+      if (bad && !AI_ALERT_STATE[key]) {
+        AI_ALERT_STATE[key] = true;
+        ev.emit('ai.provider_down', `Akun ${r.name} (${r.provider}) gagal dipakai: ${r.error || 'unknown error'}`, { key, provider: r.provider, name: r.name });
+      } else if (!bad && AI_ALERT_STATE[key]) {
+        AI_ALERT_STATE[key] = false;
+        ev.emit('ai.provider_recovered', `Akun ${r.name} (${r.provider}) sudah normal lagi.`, { key, provider: r.provider, name: r.name });
+      }
+    }
+  } catch (e) { console.log('[ai-health] gagal cek:', e.message); }
+}
+setInterval(checkAiProviders, 30 * 60000);
+setTimeout(checkAiProviders, 30000); // tunggu panel & 9router selesai boot dulu
 // Cek RAM tiap app hasil "Deploy otomatis" tiap 20 detik — nambah/kurangi
 // replika kalau perlu (lihat autoscale.js buat alasannya). Log dialirkan ke
 // console.log biasa, bukan SSE — ini jalan di belakang layar tanpa ada
@@ -502,6 +527,9 @@ async function checkRepeatedBackupFailure() {
 }
 setInterval(checkRepeatedBackupFailure, 6 * 3600 * 1000);
 checkRepeatedBackupFailure();
+
+let lifedashCache = { key: null, at: 0, data: null };
+let lifedashTrendCache = { at: 0, data: null };
 
 // ── Pemantauan layanan ──────────────────────────────────────────────────────
 const CHECKS_FILE = path.join(STATE_DIR, 'checks.json');
@@ -1146,6 +1174,9 @@ const requestHandler = async (req, res) => {
         [/^\/api\/hosts/, ['servers']],
         [/^\/api\/admin\//, ['system']],
         [/^\/api\/(thresholds|system\/power|system\/journal)/, ['system']],
+        [/^\/api\/lifedash/, ['lifedash']],
+        [/^\/api\/ai-usage/, ['ai-usage']],
+        [/^\/api\/ai-providers/, ['ai-usage']],
       ];
       if (ses && !OPEN.has(p) && !p.startsWith('/api/auth/')) {
         const hit = AREA.find(([re]) => re.test(p));
@@ -1229,6 +1260,83 @@ const requestHandler = async (req, res) => {
         } catch (e) {
           return fail(res, e, 502);
         }
+      }
+      // ---- Kelola koneksi 9Router langsung dari panel (list/toggle/hapus/test) ----
+      if (p === '/api/ai-providers' && req.method === 'GET') {
+        try { return ok(res, await aiUsage.listProviders()); }
+        catch (e) { return fail(res, e, 502); }
+      }
+      if ((m = p.match(/^\/api\/ai-providers\/([\w-]+)$/)) && req.method === 'PUT') {
+        const b = await readJson(req).catch(() => ({}));
+        try {
+          await aiUsage.setActive(m[1], !!b.isActive);
+          auth.audit(ses.username, 'ai-provider-toggle', `${m[1]} -> ${b.isActive}`);
+          return ok(res);
+        } catch (e) { return fail(res, e, 502); }
+      }
+      if ((m = p.match(/^\/api\/ai-providers\/([\w-]+)$/)) && req.method === 'DELETE') {
+        try {
+          await aiUsage.deleteConnection(m[1]);
+          auth.audit(ses.username, 'ai-provider-delete', m[1]);
+          return ok(res);
+        } catch (e) { return fail(res, e, 502); }
+      }
+      if ((m = p.match(/^\/api\/ai-providers\/([\w-]+)\/test$/)) && req.method === 'POST') {
+        try { return ok(res, await aiUsage.testConnection(m[1])); }
+        catch (e) { return fail(res, e, 502); }
+      }
+      // ---- Status kesehatan semua koneksi 9Router (dipakai widget alert & cron) ----
+      if (p === '/api/ai-providers/health' && req.method === 'GET') {
+        try { return ok(res, await aiUsage.healthCheckAll()); }
+        catch (e) { return fail(res, e, 502); }
+      }
+
+      // ---- Life Dashboard: ringkasan keuangan + tugas ETHOL + watchlist saham,
+      // dijalankan sebagai user ahnaf (skrip yang sama dipakai bot WA). Di-cache
+      // 60 detik per bulan yang diminta, biar nggak nge-hit Gmail/ETHOL tiap kali
+      // halaman dibuka/ganti bulan.
+      if (p === '/api/lifedash') {
+        const month = /^\d{4}-\d{2}$/.test(q.get('month') || '') ? q.get('month') : new Date().toISOString().slice(0, 7);
+        const now = Date.now();
+        if (lifedashCache.key === month && now - lifedashCache.at < 60000) return ok(res, lifedashCache.data);
+        const HOME = '/home/ahnaf';
+        const withTimeout = (pr, ms) => Promise.race([
+          pr, new Promise((r) => setTimeout(() => r({ code: 1, out: '' }), ms)),
+        ]);
+        const sh = (cmd, ms = 20000) => withTimeout(stacks.runP('sh', ['-c', cmd]), ms)
+          .then((r) => { try { return r.code === 0 ? JSON.parse(r.out) : null; } catch { return null; } });
+        const readJsonFile = async (f) => {
+          try { return JSON.parse(await fs.readFile(f, 'utf8')); } catch { return null; }
+        };
+        const [fin, tasks, watchlist] = await Promise.all([
+          sh(`su - ahnaf -c "python3 ${HOME}/.hermes/keuangan/ledger.py summary --month ${month} --json"`),
+          sh(`su - ahnaf -c "python3 ${HOME}/.hermes/ethol/ethol.py tasks --pending --json"`, 25000),
+          readJsonFile(`${HOME}/.hermes/saham/watchlist_active.json`),
+        ]);
+        lifedashCache = { key: month, at: now, data: { fin, tasks, watchlist, month } };
+        return ok(res, lifedashCache.data);
+      }
+      // ---- Tren keuangan 6 bulan terakhir buat grafik di Life Dashboard ----
+      if (p === '/api/lifedash/trend') {
+        const now = Date.now();
+        if (now - lifedashTrendCache.at < 300000 && lifedashTrendCache.data) return ok(res, lifedashTrendCache.data);
+        const HOME = '/home/ahnaf';
+        const withTimeout = (pr, ms) => Promise.race([
+          pr, new Promise((r) => setTimeout(() => r({ code: 1, out: '' }), ms)),
+        ]);
+        const sh = (cmd, ms = 15000) => withTimeout(stacks.runP('sh', ['-c', cmd]), ms)
+          .then((r) => { try { return r.code === 0 ? JSON.parse(r.out) : null; } catch { return null; } });
+        const months = [];
+        const d = new Date();
+        for (let i = 5; i >= 0; i--) {
+          const dd = new Date(d.getFullYear(), d.getMonth() - i, 1);
+          months.push(dd.toISOString().slice(0, 7));
+        }
+        const results = await Promise.all(months.map((mo) =>
+          sh(`su - ahnaf -c "python3 ${HOME}/.hermes/keuangan/ledger.py summary --month ${mo} --json"`)
+            .then((r) => ({ month: mo, keluar: r?.total_keluar || 0, masuk: r?.total_masuk || 0, net: r?.net || 0 }))));
+        lifedashTrendCache = { at: now, data: { months: results } };
+        return ok(res, lifedashTrendCache.data);
       }
 
       // Global search (Cmd/Ctrl+K) — cari lintas stacks/containers/database/

@@ -20,16 +20,122 @@ async function login() {
   cookie = setCookie.split(';')[0];
 }
 
-async function call(path, { retry = true } = {}) {
+async function call(path, { method = 'GET', body, retry = true } = {}) {
   if (!cookie) await login();
-  let r = await fetch(`${BASE}${path}`, { headers: { Cookie: cookie } });
+  const opts = { method, headers: { Cookie: cookie } };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  let r = await fetch(`${BASE}${path}`, opts);
   if (r.status === 401 && retry) {
     cookie = null;
     await login();
-    return call(path, { retry: false });
+    return call(path, { method, body, retry: false });
   }
-  if (!r.ok) throw new Error(`9Router ${path} -> HTTP ${r.status}`);
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`9Router ${path} -> HTTP ${r.status} ${text.slice(0, 200)}`);
+  }
+  if (r.status === 204) return null;
   return r.json();
+}
+
+// Model default buat provider yang endpoint /models per-koneksinya nggak
+// didukung (mis. codebuddy-intl) — dipakai cuma buat tes real inference.
+const FALLBACK_MODEL = {
+  'codebuddy-intl': 'kimi-k2.5',
+};
+const GATEWAY_KEY = () => admin.getSecret('NINEROUTER_API_KEY') || process.env.NINEROUTER_API_KEY || '';
+
+async function pickTestModel(connId, provider) {
+  try {
+    const r = await call(`/api/providers/${connId}/models`);
+    const first = (r.models || [])[0];
+    const id = first?.id || first?.model || first?.version;
+    if (id) return id;
+  } catch {}
+  return FALLBACK_MODEL[provider] || null;
+}
+
+async function rawConnections() {
+  const providers = await call('/api/providers');
+  return providers.connections || providers || [];
+}
+
+export async function listProviders() {
+  const items = await rawConnections();
+  const groups = {};
+  for (const c of items) {
+    (groups[c.provider] ||= []).push({
+      id: c.id, provider: c.provider, name: c.name || c.email || c.id,
+      email: c.email || null, isActive: c.isActive,
+    });
+  }
+  return { providers: groups };
+}
+
+export async function setActive(connId, isActive) {
+  return call(`/api/providers/${connId}`, { method: 'PUT', body: { isActive } });
+}
+
+export async function deleteConnection(connId) {
+  return call(`/api/providers/${connId}`, { method: 'DELETE' });
+}
+
+// Tes real inference SATU koneksi tertentu — bukan cuma cek token OAuth
+// (banyak provider "valid" tokennya tapi tetap 403 pas dipakai beneran,
+// kejadian nyata di kasus Antigravity/Gemini CLI kemarin). Sementara tes
+// jalan, koneksi lain di provider yang sama dimatikan dulu biar request
+// beneran kena akun ini, lalu dikembalikan seperti semula.
+export async function testConnection(connId) {
+  const key = GATEWAY_KEY();
+  if (!key) throw new Error('NINEROUTER_API_KEY belum diset di vault');
+  const items = await rawConnections();
+  const conn = items.find((c) => c.id === connId);
+  if (!conn) throw new Error('Koneksi tidak ditemukan');
+  const siblings = items.filter((c) => c.provider === conn.provider && c.id !== connId && c.isActive);
+
+  const model = await pickTestModel(connId, conn.provider);
+  if (!model) return { ok: false, error: 'Tidak ada model yang bisa dipakai buat tes provider ini' };
+
+  await Promise.all(siblings.map((s) => setActive(s.id, false)));
+  if (!conn.isActive) await setActive(connId, true);
+  try {
+    const r = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: `${conn.provider}/${model}`,
+        messages: [{ role: 'user', content: 'hi' }], max_tokens: 5,
+      }),
+    });
+    const text = await r.text();
+    if (r.ok) return { ok: true, model };
+    let msg = text;
+    try { msg = JSON.parse(text)?.error?.message || text; } catch {}
+    return { ok: false, model, error: msg.slice(0, 300) };
+  } finally {
+    await Promise.all(siblings.map((s) => setActive(s.id, true)));
+    if (!conn.isActive) await setActive(connId, false);
+  }
+}
+
+// Cek kesehatan SEMUA koneksi (satu per satu, terisolasi) — dipakai job
+// alert berkala. Ini beneran manggil inference (bukan cuma test token),
+// jadi jangan dipanggil terlalu sering (default tiap 30 menit dari server.js).
+export async function healthCheckAll() {
+  const items = await rawConnections();
+  const results = [];
+  for (const c of items) {
+    try {
+      const r = await testConnection(c.id);
+      results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ...r });
+    } catch (e) {
+      results.push({ id: c.id, provider: c.provider, name: c.name || c.email, ok: false, error: e.message });
+    }
+  }
+  return { results, checkedAt: new Date().toISOString() };
 }
 
 export async function summary() {

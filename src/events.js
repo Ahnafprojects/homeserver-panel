@@ -60,6 +60,10 @@ export const CATALOG = {
   'deploy.rollback':         { c: 'deploy', s: 'info',   t: 'Rollback performed' },
   'deploy.preview_cleaned':  { c: 'deploy', s: 'info',   t: 'Preview environment removed automatically' },
 
+  // ── AI Providers (9Router) ──
+  'ai.provider_down':        { c: 'ai', s: 'urgent', t: 'AI provider account failing' },
+  'ai.provider_recovered':   { c: 'ai', s: 'info',   t: 'AI provider account recovered' },
+
   // ── Ketersediaan ──
   'uptime.down':             { c: 'uptime', s: 'urgent', t: 'Service is down' },
   'uptime.up':               { c: 'uptime', s: 'urgent', t: 'Service recovered' },

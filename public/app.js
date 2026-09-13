@@ -172,6 +172,8 @@ const PAGES = [
     { id: 'events', n: 'Notifications', i: 'bell' },
     { id: 'monitor', n: 'Uptime', i: 'pulse' },
     { id: 'assistant', n: 'Assistant', i: 'spark' },
+    { id: 'lifedash', n: 'Life Dashboard', i: 'grid' },
+    { id: 'ai-usage', n: 'AI Providers', i: 'spark' },
   ]},
   { g: 'Apps', items: [
     { id: 'stacks', n: 'Stacks & Deploy', i: 'rocket' },
@@ -1964,6 +1966,276 @@ function showSetupWizard(status) {
   openDrawer('Selamat datang — setup awal', wizBody);
   $('#drawer').classList.add('wide');
 }
+
+/* ═══════════ Life Dashboard (keuangan + tugas + saham, native) ═══════════ */
+VIEWS.lifedash = () => {
+  const MONTHS_ID = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+    'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+  const curMonth = new Date().toISOString().slice(0, 7);
+  let month = curMonth;
+  let hide = localStorage.getItem('lifedash-hide') === '1';
+
+  const wrap = el('div', {});
+  mount(wrap, { full: true });
+  addAction('Refresh', 'refresh', () => { load(); loadTrend(); });
+  liveBadge(60);
+
+  const rp = (n) => hide ? 'Rp ••••••' : 'Rp' + Math.round(n || 0).toLocaleString('id-ID');
+  const card = (title, body, headExtra) => el('div', { class: 'card' },
+    el('div', { class: 'card-h' }, el('h3', {}, title), el('span', { class: 'sp' }), headExtra || ''),
+    el('div', { class: 'card-b' }, body));
+  const kv = (k, v) => el('div', { class: 'row',
+    style: 'justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px' },
+    el('span', { style: 'color:var(--tx-2)' }, k), el('b', {}, v));
+  const statTile = (k, v, m) => el('div', { class: 'stat', style: 'flex:1' },
+    el('div', { class: 'k' }, k), el('div', { class: 'v' }, v),
+    m ? el('div', { class: 'm' }, m) : '');
+  const subHead = (t) => el('h3', { style: 'font-size:11.5px;color:var(--tx-3);margin:14px 0 6px;'
+    + 'text-transform:uppercase;letter-spacing:.05em' }, t);
+
+  const grid = el('div', { class: 'grid2' });
+  const trendArea = el('div');
+  wrap.replaceChildren(trendArea, grid);
+
+  function monthNav() {
+    const [y, m] = month.split('-').map(Number);
+    const label = el('span', { style: 'font-size:12.5px;min-width:118px;text-align:center;'
+      + 'font-weight:600' }, `${MONTHS_ID[m - 1]} ${y}`);
+    const prev = el('button', { class: 'ib', title: 'Bulan sebelumnya',
+      html: ic('chevron', 14, 1.6) });
+    prev.style.transform = 'rotate(180deg)';
+    prev.onclick = () => { const d = new Date(y, m - 2, 1); month = d.toISOString().slice(0, 7); load(); };
+    const next = el('button', { class: 'ib', title: 'Bulan berikutnya', html: ic('chevron', 14, 1.6) });
+    next.disabled = month >= curMonth;
+    next.style.opacity = next.disabled ? .35 : 1;
+    next.onclick = () => { const d = new Date(y, m, 1); month = d.toISOString().slice(0, 7); load(); };
+    const hideBtn = el('button', { class: 'ib', title: hide ? 'Tampilkan nominal' : 'Sembunyikan nominal',
+      html: ic(hide ? 'unlock' : 'lock', 14) });
+    hideBtn.onclick = () => { hide = !hide; localStorage.setItem('lifedash-hide', hide ? '1' : '0'); load(); };
+    return el('div', { class: 'row', style: 'gap:2px' }, prev, label, next,
+      el('span', { style: 'width:8px' }), hideBtn);
+  }
+
+  async function loadTrend() {
+    try {
+      const t = await api('/lifedash/trend');
+      const months = t.months || [];
+      if (!months.length) { trendArea.replaceChildren(); return; }
+      const maxV = Math.max(1, ...months.map((m) => Math.max(m.keluar, m.masuk)));
+      const bars = months.map((m) => {
+        const hOut = Math.round((m.keluar / maxV) * 80);
+        const hIn = Math.round((m.masuk / maxV) * 80);
+        const label = MONTHS_ID[+m.month.split('-')[1] - 1].slice(0, 3);
+        return el('div', { style: 'display:flex;flex-direction:column;align-items:center;gap:4px;flex:1' },
+          el('div', { style: 'display:flex;align-items:flex-end;gap:2px;height:84px' },
+            el('div', { title: `Keluar: ${rp(m.keluar)}`,
+              style: `width:10px;height:${hOut}px;background:var(--bad, #e5484d);border-radius:2px 2px 0 0` }),
+            el('div', { title: `Masuk: ${rp(m.masuk)}`,
+              style: `width:10px;height:${hIn}px;background:var(--good, #30a46c);border-radius:2px 2px 0 0` })),
+          el('div', { style: 'font-size:10.5px;color:var(--tx-3)' }, label));
+      });
+      trendArea.replaceChildren(card('Tren keuangan 6 bulan terakhir',
+        el('div', { style: 'display:flex;gap:6px;align-items:flex-end' }, ...bars)));
+    } catch { trendArea.replaceChildren(); }
+  }
+
+  async function load() {
+    try {
+      const d = await api('/lifedash?month=' + encodeURIComponent(month));
+      month = d.month || month;
+      const cards = [];
+
+      // Keuangan
+      const fin = d.fin;
+      let finBody;
+      if (fin) {
+        const stats = el('div', { class: 'row', style: 'gap:10px;margin-bottom:14px' },
+          statTile('KELUAR', rp(fin.total_keluar), `${fin.count} transaksi`),
+          statTile('NET', rp(fin.net)));
+        const cats = Object.entries(fin.per_kategori || {});
+        const merch = Object.entries(fin.top_merchant || {});
+        finBody = el('div', {}, stats,
+          subHead('Per kategori'),
+          ...(cats.length ? cats.map(([k, v]) => kv(k, rp(v))) : [el('div', { class: 'empty' }, 'Belum ada transaksi')]),
+          ...(merch.length ? [subHead('Merchant terbesar'), ...merch.map(([k, v]) => kv(k, rp(v)))] : []));
+      } else {
+        finBody = el('div', { class: 'empty' }, 'Data keuangan tidak tersedia untuk bulan ini.');
+      }
+      cards.push(card('Keuangan', finBody, monthNav()));
+
+      // Tugas ETHOL
+      const tasks = d.tasks;
+      let tasksBody;
+      if (tasks == null) {
+        tasksBody = el('div', { class: 'empty' }, 'Data ETHOL tidak tersedia.');
+      } else if (!tasks.length) {
+        tasksBody = el('div', { class: 'empty' }, 'Tidak ada tugas yang belum dikumpulkan.');
+      } else {
+        tasksBody = el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Tugas'), el('th', {}, 'Matkul'), el('th', {}, 'Deadline'))),
+          el('tbody', {}, ...tasks.map((t) => el('tr', {},
+            el('td', {}, t.title || '-'), el('td', {}, t._course || '-'),
+            el('td', {}, t.deadline_indonesia || t.deadline || '-')))));
+      }
+      cards.push(card(`Tugas belum dikumpulkan (${tasks ? tasks.length : 0})`, tasksBody));
+
+      // Watchlist saham
+      const wl = d.watchlist;
+      const tickers = wl?.tickers || [];
+      let sahamBody;
+      if (!tickers.length) {
+        sahamBody = el('div', { class: 'empty' }, 'Watchlist saham lagi kosong.');
+      } else {
+        const chg = (t) => {
+          const entry = t.entry_close, last = t.last_close;
+          if (!entry || !last) return null;
+          return ((last - entry) / entry) * 100;
+        };
+        sahamBody = el('table', {},
+          el('thead', {}, el('tr', {}, el('th', {}, 'Ticker'), el('th', {}, 'Masuk'),
+            el('th', {}, 'Sekarang'), el('th', {}, '%'), el('th', {}, 'Label'))),
+          el('tbody', {}, ...tickers.map((t) => {
+            const pct = chg(t);
+            const pctEl = pct == null ? '—' : el('span', { style: `color:${pct >= 0 ? 'var(--good,#30a46c)' : 'var(--bad,#e5484d)'}` },
+              `${pct >= 0 ? '+' : ''}${pct.toFixed(1)}%`);
+            return el('tr', {},
+              el('td', { class: 'mono' }, t.ticker), el('td', { class: 'mono' }, t.entry_close ?? '—'),
+              el('td', { class: 'mono' }, t.last_close ?? '—'), el('td', {}, pctEl),
+              el('td', {}, t.last_label || '—'));
+          })));
+      }
+      cards.push(card(`Watchlist saham (${tickers.length}/${wl?.target_size ?? 5})`, sahamBody));
+
+      grid.replaceChildren(...cards);
+    } catch (e) {
+      grid.replaceChildren(el('div', { class: 'card' }, el('div', { class: 'empty' }, e.message)));
+    }
+  }
+  load();
+  loadTrend();
+};
+
+/* ═══════════ AI Providers (kelola koneksi 9Router dari panel) ═══════════ */
+VIEWS['ai-usage'] = () => {
+  const fmtNum = (n) => (n ?? 0).toLocaleString('id-ID');
+  const wrap = el('div', {});
+  mount(wrap, { full: true });
+  addAction('Refresh', 'refresh', () => { paintUsage(); paintProviders(); });
+  liveBadge(30);
+
+  const usageArea = el('div');
+  const providersArea = el('div');
+  wrap.replaceChildren(
+    el('div', { class: 'sec' }, 'Usage'), usageArea,
+    el('div', { class: 'sec' }, 'Koneksi per provider'), providersArea);
+
+  async function paintUsage() {
+    try {
+      const r = await api('/ai-usage');
+      const providerHead = el('tr', {},
+        el('th', { style: 'text-align:left' }, 'Provider'),
+        el('th', { style: 'text-align:right' }, 'Req'),
+        el('th', { style: 'text-align:right' }, 'Prompt tok'),
+        el('th', { style: 'text-align:right' }, 'Compl tok'),
+        el('th', { style: 'text-align:right' }, 'Cached tok'),
+        el('th', { style: 'text-align:right' }, 'Cost'));
+      const providerRows = Object.entries(r.byProvider || {}).map(([name, v]) => el('tr', {},
+        el('td', {}, name),
+        el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
+        el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`)));
+      const providerCard = el('div', { class: 'card' },
+        el('div', { class: 'card-h' }, el('h3', {}, 'Total usage (semua akun & provider)')),
+        el('div', { class: 'card-b' },
+          el('div', { style: 'font-size:12.5px;color:var(--tx-3);margin-bottom:8px' },
+            `${fmtNum(r.totals.requests)} request · $${(r.totals.cost || 0).toFixed(4)} total cost`),
+          el('table', { class: 'mono', style: 'width:100%;font-size:12px' },
+            el('thead', {}, providerHead),
+            el('tbody', {}, ...providerRows))));
+
+      const modelHead = el('tr', {},
+        el('th', { style: 'text-align:left' }, 'Model'),
+        el('th', { style: 'text-align:right' }, 'Req'),
+        el('th', { style: 'text-align:right' }, 'Prompt tok'),
+        el('th', { style: 'text-align:right' }, 'Compl tok'),
+        el('th', { style: 'text-align:right' }, 'Cached tok'),
+        el('th', { style: 'text-align:right' }, 'Cost'),
+        el('th', { style: 'text-align:right' }, 'Terakhir dipakai'));
+      const modelRows = (r.byModel || []).map((v) => el('tr', {},
+        el('td', {}, v.label),
+        el('td', { style: 'text-align:right' }, fmtNum(v.requests)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.promptTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.completionTokens)),
+        el('td', { style: 'text-align:right' }, fmtNum(v.cachedTokens)),
+        el('td', { style: 'text-align:right' }, `$${(v.cost || 0).toFixed(4)}`),
+        el('td', { style: 'text-align:right;color:var(--tx-3)' },
+          v.lastUsed ? new Date(v.lastUsed).toLocaleString('id-ID') : '—')));
+      const modelCard = el('div', { class: 'card' },
+        el('div', { class: 'card-h' }, el('h3', {}, 'Per model (semua akun digabung)')),
+        el('div', { class: 'card-b' },
+          el('table', { class: 'mono', style: 'width:100%;font-size:12px' },
+            el('thead', {}, modelHead),
+            el('tbody', {}, ...modelRows))));
+
+      usageArea.replaceChildren(providerCard, modelCard);
+    } catch (e) {
+      usageArea.replaceChildren(el('div', { class: 'empty' },
+        `Gagal ambil usage 9Router: ${e.message}`));
+    }
+  }
+
+  async function paintProviders() {
+    try {
+      const r = await api('/ai-providers');
+      const groups = Object.entries(r.providers || {});
+      if (!groups.length) { providersArea.replaceChildren(el('div', { class: 'empty' }, 'Belum ada koneksi.')); return; }
+
+      const cards = groups.map(([prov, list]) => {
+        const rows = list.map((c) => {
+          const statusPill = el('span', { class: c.isActive ? 'pill' : 'pill bad' },
+            c.isActive ? 'aktif' : 'nonaktif');
+          const testBtn = el('button', { class: 'ib', title: 'Tes koneksi (inference beneran)', html: ic('play', 14) });
+          const resultSpan = el('span', { style: 'font-size:11px;color:var(--tx-3);margin-left:8px' });
+          testBtn.onclick = async () => {
+            resultSpan.textContent = 'menguji...';
+            try {
+              const t = await api(`/ai-providers/${c.id}/test`, { method: 'POST' });
+              resultSpan.textContent = t.ok ? `OK (${t.model})` : `Gagal: ${(t.error || '').slice(0, 80)}`;
+              resultSpan.style.color = t.ok ? 'var(--good,#30a46c)' : 'var(--bad,#e5484d)';
+            } catch (e) { resultSpan.textContent = 'error: ' + e.message; resultSpan.style.color = 'var(--bad,#e5484d)'; }
+          };
+          const toggleBtn = el('button', { class: 'ib', title: c.isActive ? 'Nonaktifkan' : 'Aktifkan',
+            html: ic(c.isActive ? 'lock' : 'unlock', 14) });
+          toggleBtn.onclick = async () => {
+            await api(`/ai-providers/${c.id}`, { method: 'PUT', body: JSON.stringify({ isActive: !c.isActive }) });
+            paintProviders();
+          };
+          const delBtn = el('button', { class: 'ib', title: 'Hapus koneksi', html: ic('trash', 14) });
+          delBtn.onclick = async () => {
+            if (!confirm(`Hapus koneksi ${c.name}?`)) return;
+            await api(`/ai-providers/${c.id}`, { method: 'DELETE' });
+            paintProviders();
+          };
+          return el('div', { class: 'row', style: 'font-size:12.5px;padding:6px 0;border-top:1px solid var(--line)' },
+            el('span', {}, c.name), statusPill, resultSpan, el('span', { class: 'sp' }),
+            testBtn, toggleBtn, delBtn);
+        });
+        return el('div', { class: 'card' },
+          el('div', { class: 'card-h' }, el('h3', {}, prov), el('span', { class: 'sp' }),
+            el('span', { style: 'font-size:11px;color:var(--tx-3)' }, `${list.length} koneksi`)),
+          el('div', { class: 'card-b' }, ...rows));
+      });
+      providersArea.replaceChildren(...cards);
+    } catch (e) {
+      providersArea.replaceChildren(el('div', { class: 'empty' }, e.message));
+    }
+  }
+
+  paintUsage();
+  paintProviders();
+};
 
 api('/auth/state').then(st => {
   if (st.setup) return authScreen('setup');

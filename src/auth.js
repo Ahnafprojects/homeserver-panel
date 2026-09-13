@@ -112,6 +112,8 @@ export const PAGES = {
   events: 'Notifications',
   monitor: 'Uptime',
   assistant: 'AI Assistant',
+  lifedash: 'Life Dashboard',
+  'ai-usage': 'AI Providers (9Router)',
   stacks: 'Stacks & Deploy',
   containers: 'Containers',
   logs: 'Logs',
